@@ -21,7 +21,12 @@ window.WEATHER = (function () {
   /* --- время: только хелперы с TZ_OFFSET (§6); toLocaleTimeString без
          явного timeZone запрещён — и не используется вовсе --- */
   function fmtTs(epoch) {
-    const d = new Date((Number(epoch) + TZ_OFFSET) * 1000);
+    // m-3: нет значения (null/undefined/мусор) — «—», а не «1970…»/RangeError.
+    // (Number(null) === 0 — финитно, поэтому null/undefined отсечены явно)
+    if (epoch === null || epoch === undefined) return "—";
+    const n = Number(epoch);
+    if (!isFinite(n)) return "—";
+    const d = new Date((n + TZ_OFFSET) * 1000);
     return d.toISOString().replace("T", " ").slice(0, 16);
   }
   function fmtTime(epoch) { return fmtTs(epoch).slice(11, 16); }
