@@ -434,7 +434,12 @@ class UiHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return 404
         is_html = ent["ctype"].startswith("text/html")
-        cache = "no-cache" if is_html else "public, max-age=86400"
+        # M-3 (ревью r1-r3): html/js/css — no-cache: ETag/304 уже реализованы,
+        # ревалидация дешёвая; долгий кэш 24 ч — только бинарные ассеты
+        # (.svg/.png/.ico/.woff2). Отклонение от §5.0 v1.2.2, патч v1.2.4 заказан.
+        ext = os.path.splitext(url)[1].lower()
+        cache = ("no-cache" if ext in (".html", ".js", ".css")
+                 else "public, max-age=86400")
         extra = [("Vary", "Accept-Encoding")]
         inm = self.headers.get("If-None-Match")
         if inm and ent["etag"] in {t.strip() for t in inm.split(",")}:
