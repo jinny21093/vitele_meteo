@@ -238,8 +238,9 @@ window.WEATHER = (function () {
 
   /* --- шапка для экранов U2+ (§4.0 — на всех экранах): свежесть + батарея.
          page-now.js заполняет её из своих данных; здесь — самостоятельные
-         запросы /api/now + /api/events (24 ч, логика 🔴 BATTERY_LOW — как в
-         page-now). Ошибки глотаются: баннер уже показан apiFetch, экран
+         запросы /api/now + /api/events (24 ч, только types=BATTERY_LOW —
+         m-8: остальные события шапке не нужны; логика 🔴 — как в page-now).
+         Ошибки глотаются: баннер уже показан apiFetch, экран
          продолжает рисовать графики (§8 graceful degradation). --- */
   async function refreshHeader() {
     try {
@@ -252,7 +253,7 @@ window.WEATHER = (function () {
       const ok = batteryOk((d.current || {}).battery_raw);
       let evs = [];
       try {
-        const ev = await apiFetch("/api/events?from=" + (nowS - 86400) + "&to=" + nowS);
+        const ev = await apiFetch("/api/events?from=" + (nowS - 86400) + "&to=" + nowS + "&types=BATTERY_LOW");
         evs = ev.rows || [];
       } catch (e) { evs = []; }
       const lowOpen = evs.some(
