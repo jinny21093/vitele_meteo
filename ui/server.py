@@ -829,6 +829,14 @@ def main(argv):
     static_map = load_static(static_root)
     wcols_list = load_weather_columns(db_path)
     wcols = frozenset(wcols_list)
+    # m-4 (ревью r1-r3): дефолтные поля /api/history валидируются на старте —
+    # дрейф схемы не должен превращать каждый дефолтный запрос в 503
+    # (дисциплина как у load_agg_fields: ERROR + exit).
+    unknown = [f for f in HISTORY_DEFAULT_FIELDS if f not in wcols]
+    if unknown:
+        alog("ERROR", f"startup: HISTORY_DEFAULT_FIELDS unknown={','.join(unknown)} "
+                      f"db={db_path}")
+        sys.exit(1)
     now_cols = [c for c in wcols_list if c not in NOW_EXCLUDE]   # §5.1 v1.2.3
     hourly_fields = load_agg_fields(db_path, "v_hourly", HOURLY_FIELDS)   # §5.3
     daily_fields = load_agg_fields(db_path, "v_daily", DAILY_FIELDS)      # §5.4
