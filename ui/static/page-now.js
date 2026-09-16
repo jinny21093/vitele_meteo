@@ -159,50 +159,54 @@
   /* --- sparkline T и P за 6 ч (§4.1) --- */
   async function renderSparks(nowSec) {
     if (typeof Chart === "undefined") return;   // chart.min.js не загрузился
-    const from = nowSec - 6 * 3600;
-    const q = "from=" + from + "&to=" + nowSec +
-      "&fields=ts,outdoor_temp_c,pressure_rel_mmhg";
-    const h = await W.apiFetch("/api/history?" + q);
-    const fi = {};
-    (h.fields || []).forEach((f, i) => { fi[f] = i; });
-    const labels = [], tData = [], pData = [];
-    (h.rows || []).forEach((row) => {
-      labels.push(W.fmtTime(row[fi.ts]));
-      const t = row[fi.outdoor_temp_c];
-      const p = row[fi.pressure_rel_mmhg];
-      tData.push(t === null ? null : Number(t));
-      pData.push(p === null ? null : Number(p));
-    });
-    const th = W.chartTheme();   // m-7: как в page-day/month, без ручного CSS
-    const muted = th.muted;
-    const grid = th.grid;
-    const accent = th.accent;
-    const baseOpts = {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 7, color: muted, font: { size: 10 } },
-             grid: { display: false } },
-        y: { ticks: { color: muted, font: { size: 10 } },
-             grid: { color: grid } }
-      }
-    };
-    if (chartT) chartT.destroy();
-    chartT = new Chart($("spark-t"), {
-      type: "line",
-      data: { labels, datasets: [{ data: tData, borderColor: accent,
-        borderWidth: 2, pointRadius: 0, tension: .25, spanGaps: true }] },
-      options: JSON.parse(JSON.stringify(baseOpts))
-    });
-    if (chartP) chartP.destroy();
-    chartP = new Chart($("spark-p"), {
-      type: "line",
-      data: { labels, datasets: [{ data: pData, borderColor: "#dfa53f",
-        borderWidth: 2, pointRadius: 0, tension: .25, spanGaps: true }] },
-      options: JSON.parse(JSON.stringify(baseOpts))
-    });
+    /* m-11: в try/catch (образец — renderLastEvent, §8): сбой спарклайнов
+       не гасит карточки, шапку и «последнее событие». */
+    try {
+      const from = nowSec - 6 * 3600;
+      const q = "from=" + from + "&to=" + nowSec +
+        "&fields=ts,outdoor_temp_c,pressure_rel_mmhg";
+      const h = await W.apiFetch("/api/history?" + q);
+      const fi = {};
+      (h.fields || []).forEach((f, i) => { fi[f] = i; });
+      const labels = [], tData = [], pData = [];
+      (h.rows || []).forEach((row) => {
+        labels.push(W.fmtTime(row[fi.ts]));
+        const t = row[fi.outdoor_temp_c];
+        const p = row[fi.pressure_rel_mmhg];
+        tData.push(t === null ? null : Number(t));
+        pData.push(p === null ? null : Number(p));
+      });
+      const th = W.chartTheme();   // m-7: как в page-day/month, без ручного CSS
+      const muted = th.muted;
+      const grid = th.grid;
+      const accent = th.accent;
+      const baseOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 7, color: muted, font: { size: 10 } },
+               grid: { display: false } },
+          y: { ticks: { color: muted, font: { size: 10 } },
+               grid: { color: grid } }
+        }
+      };
+      if (chartT) chartT.destroy();
+      chartT = new Chart($("spark-t"), {
+        type: "line",
+        data: { labels, datasets: [{ data: tData, borderColor: accent,
+          borderWidth: 2, pointRadius: 0, tension: .25, spanGaps: true }] },
+        options: JSON.parse(JSON.stringify(baseOpts))
+      });
+      if (chartP) chartP.destroy();
+      chartP = new Chart($("spark-p"), {
+        type: "line",
+        data: { labels, datasets: [{ data: pData, borderColor: "#dfa53f",
+          borderWidth: 2, pointRadius: 0, tension: .25, spanGaps: true }] },
+        options: JSON.parse(JSON.stringify(baseOpts))
+      });
+    } catch (e) { /* §8: спарклайны недоступны — остальной экран живёт */ }
   }
 
   let headerCache = [];

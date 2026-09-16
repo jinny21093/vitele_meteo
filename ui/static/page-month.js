@@ -64,7 +64,7 @@
   function renderHeatmap(h) {
     const grid = $("hm-grid");
     grid.textContent = "";
-    const rows = h.rows || [];
+    const rows = (h && h.rows) || [];      // m-11: h может быть null (сбой запроса)
     $("hm-note").classList.toggle("hidden", rows.length > 0);
     if (!rows.length) return;
     const fi = {};
@@ -112,6 +112,10 @@
   function renderCalendar(daily, nowSec) {
     const box = $("cal-box");
     box.textContent = "";
+    if (!daily) {                          // m-11: запрос упал — блок деградирует
+      box.appendChild(el("span", "muted", "Календарь недоступен"));
+      return;
+    }
     const fi = {};
     (daily.fields || []).forEach((f, i) => { fi[f] = i; });
     const byMonth = new Map();             // y*12+m -> Map(dayOfMonth -> row)
@@ -163,7 +167,7 @@
 
   /* --- тренд min/avg/max по суткам (Chart.js) --- */
   function renderTrend(daily) {
-    if (typeof Chart === "undefined") return;    // chart.min.js не загрузился
+    if (typeof Chart === "undefined" || !daily) return;    // m-11: null-safe
     const rows = daily.rows || [];
     const fi = {};
     (daily.fields || []).forEach((f, i) => { fi[f] = i; });
@@ -209,13 +213,17 @@
   async function refresh() {
     const nowSec = Math.floor(Date.now() / 1000);
     const from = dayIdx(nowSec) * 86400 - TZ() - (days - 1) * 86400;
-    const [h, d] = await Promise.all([
-      W.apiFetch("/api/hourly?from=" + from + "&to=" + nowSec),
-      W.apiFetch("/api/daily?from=" + from + "&to=" + nowSec)
-    ]);
-    renderHeatmap(h);
-    renderCalendar(d, nowSec);
-    renderTrend(d);
+    /* m-11 (ревью r1-r3, §8): независимая деградация — сбой /api/hourly
+       не гасит календарь/тренд из /api/daily и наоборот; сбой одного блока
+       не гасит остальные и шапку. Баннер уже показан apiFetch. */
+    let h = null, d = null;
+    try { h = await W.apiFetch("/api/hourly?from=" + from + "&to=" + nowSec); }
+    catch (e) { /* heatmap деградирует в «нет данных» */ }
+    try { d = await W.apiFetch("/api/daily?from=" + from + "&to=" + nowSec); }
+    catch (e) { /* календарь/тренд деградируют */ }
+    try { renderHeatmap(h); } catch (e) { /* блок продолжает жить */ }
+    try { renderCalendar(d, nowSec); } catch (e) { /* блок продолжает жить */ }
+    try { renderTrend(d); } catch (e) { /* блок продолжает жить */ }
     await W.refreshHeader();                     // §4.0: шапка на всех экранах
     const lu = $("last-update");
     if (lu) lu.textContent = "обновлено в " + W.fmtTime(nowSec);

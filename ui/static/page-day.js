@@ -127,7 +127,19 @@
         }
       }
     });
-    return acc;   // суммарные осадки за окно
+    // rain-total вынесен в setRainTotal (m-11): не зависит от Chart.js
+  }
+
+  /* m-11 (ревью r1-r3): сводка осадков — без Chart.js (чистая математика
+     по rainBuckets), чтобы жила при незагруженном vendor и при сбое графиков. */
+  function setRainTotal(rows, fi) {
+    const buckets = rainBuckets(rows, fi);
+    let acc = 0;
+    for (const v of buckets.values()) acc += v;
+    const hasRain = rows.some((r) => r[fi.rain_total_mm] !== null &&
+                                    r[fi.rain_total_mm] !== undefined);
+    const rt = $("rain-total");
+    if (rt) rt.textContent = "Осадки за 24 ч: " + (hasRain ? acc.toFixed(1) + " мм" : "—");
   }
 
   function renderCharts(rows, fi) {
@@ -160,11 +172,7 @@
       ] },
       options: lineOpts(theme) });
 
-    const total = renderRain(rows, fi, theme);
-    const rt = $("rain-total");
-    const hasRain = rows.some((r) => r[fi.rain_total_mm] !== null &&
-                                    r[fi.rain_total_mm] !== undefined);
-    rt.textContent = "Осадки за 24 ч: " + (hasRain ? total.toFixed(1) + " мм" : "—");
+    renderRain(rows, fi, theme);
 
     destroy("sun");
     charts.sun = new Chart($("chart-sun"), { type: "line",
@@ -232,6 +240,16 @@
     }
   }
 
+  /* m-11 (ревью r1-r3): графики не должны ронять таблицу/осадки (§8).
+     Без Chart.js (vendor не загрузился) и при исключении отрисовки —
+     таблица (renderTable) и rain-total (setRainTotal) живут. */
+  function renderChartsSafe(rows, fi) {
+    if (typeof Chart === "undefined") return;
+    try {
+      renderCharts(rows, fi);
+    } catch (e) { /* сбой отрисовки — остальное уже отрисовано */ }
+  }
+
   async function refresh() {
     const nowSec = Math.floor(Date.now() / 1000);
     const q = "from=" + (nowSec - DAY_S) + "&to=" + nowSec +
@@ -250,8 +268,9 @@
       tb.appendChild(tr);
       $("rain-total").textContent = "Осадки за 24 ч: —";
     } else {
-      renderCharts(rows, fi);
-      renderTable(rows, fi);
+      renderTable(rows, fi);                     // m-11: от Chart.js не зависит
+      setRainTotal(rows, fi);                    // m-11: от Chart.js не зависит
+      renderChartsSafe(rows, fi);                // m-11: guard + try/catch
     }
     await W.refreshHeader();                     // §4.0: шапка на всех экранах
     const lu = $("last-update");
