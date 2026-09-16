@@ -107,17 +107,21 @@ window.WEATHER = (function () {
   function poll(fn, intervalMs) {
     let timer = null;
     let stopped = false;
+    let busy = false;                 // m-6: in-flight guard
     let delay = intervalMs;
     async function tick() {
-      if (stopped) return;
+      if (stopped || busy) return;    // m-6: параллельный tick пропускается
+      busy = true;
       try {
         await fn();
         delay = intervalMs;                       // успех сбрасывает backoff
       } catch (e) {
         delay = (e && e.retryMs) ? e.retryMs
           : Math.min((delay || intervalMs) * 2, POLL_BACKOFF_MAX_MS);
+      } finally {
+        busy = false;
+        schedule();
       }
-      schedule();
     }
     function schedule() {
       if (stopped) return;
@@ -136,7 +140,11 @@ window.WEATHER = (function () {
     document.addEventListener("visibilitychange", onVisible);
     tick();
     return {
-      stop() { stopped = true; clearTimeout(timer); },
+      stop() {
+        stopped = true;
+        clearTimeout(timer);
+        document.removeEventListener("visibilitychange", onVisible);   // m-6
+      },
       refreshNow() { if (!stopped) { clearTimeout(timer); tick(); } }
     };
   }
