@@ -98,19 +98,22 @@ SANITY = {
 }
 
 # battery — whitelist (weather-7): regex \bok\b матчит «not ok» -> ложный OK.
-# Всё, что НЕ содержит известную OK-строку целиком, = LOW (fail-safe в верную
-# сторону). Новые OK-варианты дополнять сюда И в weatherstation.md.
+# Всё, что не РАВНО известной OK-строке (после trim/lower), = LOW (fail-safe
+# в верную сторону). Новые OK-варианты дополнять сюда И в weatherstation.md.
+# Синхронно с ui/static/app.js BATTERY_OK (M-1 ревью r1-r3).
 BATTERY_OK_PATTERNS = (
     "all battery are ok",   # единственная известная OK-строка станции
 )
 
 
 def battery_is_ok(raw):
-    """Fail-safe: пусто/неизвестно = LOW (DeepSeek «вдогонка» §1)."""
+    """Fail-safe: пусто/неизвестно = LOW (DeepSeek «вдогонка» §1).
+    Точное равенство по whitelist (ревью B, r1-r3): проверка подстрокой
+    (any(p in low ...)) матчит «not all battery are ok» как OK -> пропущенный
+    BATTERY_LOW; тот же класс регрессии, что M-1 в UI."""
     if not raw:
         return False
-    low = raw.lower()
-    return any(p in low for p in BATTERY_OK_PATTERNS)
+    return raw.strip().lower() in BATTERY_OK_PATTERNS
 
 
 RAPID_DEDUP_SEC = 3 * 3600     # RAPID_TEMP_* не чаще раза в 3 ч
