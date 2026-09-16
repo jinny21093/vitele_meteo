@@ -95,7 +95,11 @@ window.WEATHER = (function () {
     let body = null;
     try { body = await res.json(); } catch (e) { /* не JSON — ладно */ }
     if (res.status === 401) { banner("Требуется авторизация", "warn"); }
-    else if (res.status === 429) { banner("Слишком много запросов — пауза 60 с", "warn", true); }
+    else if (res.status === 429) {
+      // m-9: лимит — про неудачные ЛОГИНЫ; пауза — из Retry-After сервера
+      const ra = parseInt(res.headers.get("Retry-After"), 10) || 60;
+      banner("Слишком много неудачных попыток входа — подождите " + ra + " с", "warn", true);
+    }
     else if (res.status >= 500 && !new ApiError(res.status, body).initMode) {
       banner("Ошибка API " + res.status + " — повтор через 30 с", "bad");
     }
