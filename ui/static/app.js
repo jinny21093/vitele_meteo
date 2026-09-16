@@ -67,12 +67,24 @@ window.WEATHER = (function () {
   }
 
   async function apiFetch(path, opts) {
+    // m-1 (ревью r1-r3): зависший TCP не должен держать экран без фидбека —
+    // 15 с на ответ, затем AbortError -> баннер + ApiError(0).
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15000);
     let res;
     try {
-      res = await fetch(path, Object.assign({ headers: { "Accept": "application/json" } }, opts || {}));
+      res = await fetch(path, Object.assign(
+        { headers: { "Accept": "application/json" } }, opts || {},
+        { signal: ac.signal }));   // сигнал наш — поверх opts (таймаут обязателен)
     } catch (e) {
+      if (e && e.name === "AbortError") {
+        banner("Сервер не отвечает (таймаут 15 с)", "bad");
+        throw new ApiError(0, null);
+      }
       banner("Сеть недоступна: " + e.message, "bad");
       throw new ApiError(0, null);
+    } finally {
+      clearTimeout(timer);
     }
     if (res.ok) return res.json();
     let body = null;
