@@ -41,6 +41,7 @@ window.WEATHER = (function () {
   function banner(msg, kind, sticky) {
     const el = document.getElementById("banner");
     if (!el) return;
+    clearTimeout(banner._t);   // M-2: старый таймер не гасит новый sticky-баннер
     if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
     el.textContent = msg;
     el.className = "banner " + (kind || "info");
