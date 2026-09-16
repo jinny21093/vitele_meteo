@@ -295,8 +295,14 @@ def load_static(root):
                 "ctype": ctype, "raw": raw, "gz": gz,
                 "etag": '"' + hashlib.sha256(raw).hexdigest()[:32] + '"',
             }
+    # M-4 (ревью r1-r3): required покрывает все экраны U0-U3. Заглушки U4-U6
+    # (events/forecast/settings.html) сознательно НЕ в списке — их отсутствие
+    # старт валилить не должно.
     for required in ("/static/index.html", "/static/style.css", "/static/app.js",
-                     "/static/vendor/chart.min.js"):
+                     "/static/vendor/chart.min.js", "/static/page-now.js",
+                     "/static/day.html", "/static/month.html",
+                     "/static/page-day.js", "/static/page-month.js",
+                     "/static/icons/favicon.svg"):
         if required not in cache:
             alog("ERROR", f"startup: required static file missing file={required}")
             sys.exit(1)
