@@ -153,10 +153,19 @@ window.WEATHER = (function () {
     };
   }
 
-  /* --- тема (§6): CSS-переменные + prefers-color-scheme + тумблер --- */
+  /* --- тема (§6): CSS-переменные + prefers-color-scheme + тумблер ---
+     m-16: localStorage может быть заблокирован (private mode/политика) —
+     исключение на верхнем уровне убивало весь скрипт. Обёртки: чтение —
+     null (тема — системная), запись — молча без сохранения. */
+  function lsGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function lsSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* живём без сохранения */ }
+  }
   const THEME_KEY = "weather-theme";
   function applyTheme() {
-    const saved = localStorage.getItem(THEME_KEY);
+    const saved = lsGet(THEME_KEY);
     if (saved === "light" || saved === "dark") {
       document.documentElement.dataset.theme = saved;
     } else {
@@ -169,7 +178,7 @@ window.WEATHER = (function () {
         ? "dark" : "light");
     const next = cur === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
-    localStorage.setItem(THEME_KEY, next);
+    lsSet(THEME_KEY, next);
   }
 
   /* --- шапка §4.0: статус свежести и батареи --- */
@@ -287,7 +296,7 @@ window.WEATHER = (function () {
 
   return {
     UI_VERSION, ready, apiFetch, ApiError, poll, banner,
-    fmtTs, fmtTime, fmtDate, timeAgo, num, batteryOk,
+    fmtTs, fmtTime, fmtDate, timeAgo, num, batteryOk, lsGet, lsSet,
     setFreshness, setBattery,
     colorForTemp, colorForWind, colorForUvi, pressureTrend, RUMB_ARROW,
     chartTheme, refreshHeader,

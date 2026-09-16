@@ -13,7 +13,7 @@
   const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
   const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль",
                   "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
-  let days = parseInt(localStorage.getItem(DAYS_KEY), 10);
+  let days = parseInt(W.lsGet(DAYS_KEY), 10);   // m-16: guard заблокированного storage
   if (![7, 30, 90].includes(days)) days = 30;
   let trendChart = null;
   let poller = null;
@@ -236,7 +236,7 @@
     document.querySelectorAll(".seg[data-days]").forEach((b) => {
       b.addEventListener("click", () => {
         days = Number(b.dataset.days);
-        localStorage.setItem(DAYS_KEY, String(days));
+        W.lsSet(DAYS_KEY, String(days));          // m-16: guard storage
         setSelector();
         if (poller) poller.refreshNow();
       });
