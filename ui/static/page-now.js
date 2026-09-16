@@ -38,9 +38,9 @@
     if (gap > 600) { kind = "bad"; }
     else if (gap > 120) { kind = "warn"; }
     W.setFreshness(kind, text);
-    // батарея: whitelist OK-строки коллектора (weather-7); иначе fail-safe 🟡,
-    // 🔴 — активное BATTERY_LOW за сутки
-    const ok = /all battery are ok/i.test(String(batteryRaw || ""));
+    // батарея: общий whitelist OK-строк коллектора W.batteryOk (M-1, app.js);
+    // иначе fail-safe 🟡, 🔴 — активное BATTERY_LOW за сутки
+    const ok = W.batteryOk(batteryRaw);
     const lowOpen = (events || []).some(
       (r) => r.event_type === "BATTERY_LOW" && r.ts_end === null);
     if (lowOpen) W.setBattery("bad", "батарея: LOW");

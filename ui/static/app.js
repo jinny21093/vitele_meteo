@@ -10,6 +10,14 @@ window.WEATHER = (function () {
 
   let TZ_OFFSET = TZ_FALLBACK;
 
+  /* Батарея: whitelist OK-строк коллектора (M-1, ревью r1-r3): regex-подстрока
+     матчит "not all battery are ok" как OK. Источник:
+     stage-a/weather_collector.py BATTERY_OK_PATTERNS — держать синхронным. */
+  const BATTERY_OK = new Set(["all battery are ok"]);
+  function batteryOk(raw) {
+    return BATTERY_OK.has(String(raw || "").trim().toLowerCase());
+  }
+
   /* --- время: только хелперы с TZ_OFFSET (§6); toLocaleTimeString без
          явного timeZone запрещён — и не используется вовсе --- */
   function fmtTs(epoch) {
@@ -215,8 +223,7 @@ window.WEATHER = (function () {
       let kind = "ok";
       if (gap > 600) kind = "bad"; else if (gap > 120) kind = "warn";
       setFreshness(kind, "обновлено " + timeAgo(d.status.last_poll_ts, nowS));
-      const ok = /all battery are ok/i.test(
-        String((d.current || {}).battery_raw || ""));
+      const ok = batteryOk((d.current || {}).battery_raw);
       let evs = [];
       try {
         const ev = await apiFetch("/api/events?from=" + (nowS - 86400) + "&to=" + nowS);
@@ -249,7 +256,7 @@ window.WEATHER = (function () {
 
   return {
     UI_VERSION, ready, apiFetch, ApiError, poll, banner,
-    fmtTs, fmtTime, fmtDate, timeAgo, num,
+    fmtTs, fmtTime, fmtDate, timeAgo, num, batteryOk,
     setFreshness, setBattery,
     colorForTemp, colorForWind, colorForUvi, pressureTrend, RUMB_ARROW,
     chartTheme, refreshHeader,
