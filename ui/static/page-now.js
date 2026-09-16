@@ -173,11 +173,10 @@
       tData.push(t === null ? null : Number(t));
       pData.push(p === null ? null : Number(p));
     });
-    const css = getComputedStyle(document.documentElement);
-    const fg = css.getPropertyValue("--fg").trim() || "#1d2733";
-    const muted = css.getPropertyValue("--muted").trim() || "#6b7a8c";
-    const grid = css.getPropertyValue("--border").trim() || "#dbe2ea";
-    const accent = css.getPropertyValue("--accent").trim() || "#2f6db3";
+    const th = W.chartTheme();   // m-7: как в page-day/month, без ручного CSS
+    const muted = th.muted;
+    const grid = th.grid;
+    const accent = th.accent;
     const baseOpts = {
       responsive: true,
       maintainAspectRatio: false,
