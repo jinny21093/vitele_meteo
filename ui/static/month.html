@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Погода — Месяц</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
+<script src="/static/vendor/chart.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+<script src="/static/page-month.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <nav class="nav" aria-label="Разделы"><a href="/">Сейчас</a><a href="/day">Сутки</a><a href="/month" class="active">Месяц</a><a href="/events">События</a><a href="/forecast">Прогноз</a><a href="/settings" class="nav-minor">Настройки</a></nav>
+  <div class="indicators">
+    <span class="dot-wrap" title="Свежесть данных коллектора">
+      <span class="dot" id="fresh-dot"></span><span id="fresh-text" class="dot-text">—</span>
+    </span>
+    <span class="dot-wrap" title="Батарея датчиков">
+      <span class="dot" id="batt-dot"></span><span id="batt-text" class="dot-text">—</span>
+    </span>
+    <span id="ui-version" class="muted"></span>
+    <button id="theme-toggle" class="btn-icon" type="button" title="Светлая/тёмная тема">&#9680;</button>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden" role="alert"></div>
+
+<main class="charts-page">
+  <section class="chart-card">
+    <h2>Период</h2>
+    <div class="controls" role="group" aria-label="Период">
+      <span class="muted">Показать:</span>
+      <button class="seg" data-days="7" type="button">7 дней</button>
+      <button class="seg" data-days="30" type="button">30 дней</button>
+      <button class="seg" data-days="90" type="button">90 дней</button>
+    </div>
+  </section>
+  <section class="chart-card">
+    <h2>Температура по часам, &deg;C (дни &times; часы)</h2>
+    <div class="hm-legend" id="hm-legend"></div>
+    <div class="hm-wrap"><div class="hm-grid" id="hm-grid"></div></div>
+    <div id="hm-note" class="muted hidden">Данных пока нет — материализатор набирает историю.</div>
+  </section>
+  <section class="chart-card">
+    <h2>Календарь осадков, мм</h2>
+    <div id="cal-box"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+  <section class="chart-card">
+    <h2>Тренд температуры, &deg;C — мин / средн / макс по суткам</h2>
+    <div class="chart-wrap"><canvas id="chart-trend" aria-label="Тренд температуры"></canvas></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <button id="refresh" class="btn" type="button">Обновить</button>
+  <span id="last-update" class="muted"></span>
+</footer>
+</body>
+</html>

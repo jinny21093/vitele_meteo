@@ -1,0 +1,10 @@
+[Unit]
+Description=Weather daily aggregates at 00:05 MSK (roadmap B1, D7 00:00 MSK сутки)
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+Unit=weather-agg-daily.service
+
+[Install]
+WantedBy=timers.target

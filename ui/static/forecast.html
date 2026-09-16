@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Погода — Прогноз</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <nav class="nav" aria-label="Разделы"><a href="/">Сейчас</a><a href="/day">Сутки</a><a href="/month">Месяц</a><a href="/events">События</a><a href="/forecast" class="active">Прогноз</a><a href="/settings" class="nav-minor">Настройки</a></nav>
+  <div class="indicators">
+    <span class="dot-wrap" title="Свежесть данных коллектора">
+      <span class="dot" id="fresh-dot"></span><span id="fresh-text" class="dot-text">—</span>
+    </span>
+    <span class="dot-wrap" title="Батарея датчиков">
+      <span class="dot" id="batt-dot"></span><span id="batt-text" class="dot-text">—</span>
+    </span>
+    <span id="ui-version" class="muted"></span>
+    <button id="theme-toggle" class="btn-icon" type="button" title="Светлая/тёмная тема">&#9680;</button>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden" role="alert"></div>
+
+<main class="placeholder-wrap">
+  <section class="card placeholder">
+    <h2>Прогноз</h2>
+    <p>Экран появится в юните U5 (ТЗ weather-ui-spec.md §11).</p>
+    <p class="muted">Сейчас реализованы U0 (скелет, auth, health) и U1 («Сейчас»).</p>
+  </section>
+</main>
+
+<footer class="foot"><span id="last-update" class="muted"></span></footer>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Погода — Сутки</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
+<script src="/static/vendor/chart.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+<script src="/static/page-day.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <nav class="nav" aria-label="Разделы"><a href="/">Сейчас</a><a href="/day" class="active">Сутки</a><a href="/month">Месяц</a><a href="/events">События</a><a href="/forecast">Прогноз</a><a href="/settings" class="nav-minor">Настройки</a></nav>
+  <div class="indicators">
+    <span class="dot-wrap" title="Свежесть данных коллектора">
+      <span class="dot" id="fresh-dot"></span><span id="fresh-text" class="dot-text">—</span>
+    </span>
+    <span class="dot-wrap" title="Батарея датчиков">
+      <span class="dot" id="batt-dot"></span><span id="batt-text" class="dot-text">—</span>
+    </span>
+    <span id="ui-version" class="muted"></span>
+    <button id="theme-toggle" class="btn-icon" type="button" title="Светлая/тёмная тема">&#9680;</button>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden" role="alert"></div>
+
+<main class="charts-page">
+  <section class="chart-card">
+    <h2>Температура, &deg;C — улица / дом</h2>
+    <div class="chart-wrap"><canvas id="chart-t" aria-label="Температура за сутки"></canvas></div>
+  </section>
+  <section class="chart-card">
+    <h2>Давление, мм рт. ст. (rel)</h2>
+    <div class="chart-wrap"><canvas id="chart-p" aria-label="Давление за сутки"></canvas></div>
+  </section>
+  <section class="chart-card">
+    <h2>Ветер, м/с — скорость / порыв / avg10</h2>
+    <div class="chart-wrap"><canvas id="chart-wind" aria-label="Ветер за сутки"></canvas></div>
+  </section>
+  <section class="chart-card">
+    <h2>Дождь, мм — 15-мин корзины + кумулятив</h2>
+    <div class="chart-wrap"><canvas id="chart-rain" aria-label="Дождь за сутки"></canvas></div>
+  </section>
+  <section class="chart-card">
+    <h2>Солнце — свет, Вт/м&sup2; и UVI</h2>
+    <div class="chart-wrap"><canvas id="chart-sun" aria-label="Солнце за сутки"></canvas></div>
+  </section>
+  <section class="chart-card">
+    <h2>Минимум / максимум / среднее за 24 ч</h2>
+    <div class="rain-total" id="rain-total">Осадки за 24 ч: —</div>
+    <div class="table-wrap">
+      <table class="stat-table">
+        <thead>
+          <tr><th>Показатель</th><th>Мин</th><th>Время</th><th>Макс</th><th>Время</th><th>Средн</th></tr>
+        </thead>
+        <tbody id="stat-body">
+          <tr><td colspan="6" class="muted">загрузка&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <button id="refresh" class="btn" type="button">Обновить</button>
+  <span id="last-update" class="muted"></span>
+</footer>
+</body>
+</html>

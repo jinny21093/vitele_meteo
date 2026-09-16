@@ -1,0 +1,22 @@
+# БД и бэкапы — никогда не в репозитории
+*.db
+*.db.gz
+*.db-wal
+*.db-shm
+backups/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Конфиги с кредами — только на хосте
+*.conf
+!systemd/*
+auth*
+
+# Логи и временные файлы
+*.log
+*.new
+*.tmp
+state/

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Погода — Сейчас</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
+<script src="/static/vendor/chart.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+<script src="/static/page-now.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <nav class="nav" aria-label="Разделы">
+    <a href="/" class="active">Сейчас</a>
+    <a href="/day">Сутки</a>
+    <a href="/month">Месяц</a>
+    <a href="/events">События</a>
+    <a href="/forecast">Прогноз</a>
+    <a href="/settings" class="nav-minor">Настройки</a>
+  </nav>
+  <div class="indicators">
+    <span class="dot-wrap" title="Свежесть данных коллектора">
+      <span class="dot" id="fresh-dot"></span><span id="fresh-text" class="dot-text">—</span>
+    </span>
+    <span class="dot-wrap" title="Батарея датчиков">
+      <span class="dot" id="batt-dot"></span><span id="batt-text" class="dot-text">—</span>
+    </span>
+    <span id="ui-version" class="muted"></span>
+    <button id="theme-toggle" class="btn-icon" type="button" title="Светлая/тёмная тема">&#9680;</button>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden" role="alert"></div>
+
+<main class="grid" id="cards">
+  <section class="card" id="card-outdoor">
+    <h2>Улица</h2>
+    <div class="card-body" id="outdoor-body"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+  <section class="card" id="card-indoor">
+    <h2>Дом</h2>
+    <div class="card-body" id="indoor-body"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+  <section class="card" id="card-pressure">
+    <h2>Давление</h2>
+    <div class="card-body" id="pressure-body"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+  <section class="card" id="card-wind">
+    <h2>Ветер</h2>
+    <div class="card-body" id="wind-body"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+  <section class="card" id="card-rain">
+    <h2>Дождь</h2>
+    <div class="card-body" id="rain-body"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+  <section class="card" id="card-sun">
+    <h2>Солнце</h2>
+    <div class="card-body" id="sun-body"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+</main>
+
+<section class="lower">
+  <div class="card" id="card-last-event">
+    <h2>Событие за сутки</h2>
+    <div class="card-body" id="last-event"><span class="muted">—</span></div>
+  </div>
+  <div class="card spark-card">
+    <h2>T &deg;C — 6 ч</h2>
+    <div class="spark-wrap"><canvas id="spark-t" aria-label="Температура за 6 часов"></canvas></div>
+  </div>
+  <div class="card spark-card">
+    <h2>P, мм рт. ст. — 6 ч</h2>
+    <div class="spark-wrap"><canvas id="spark-p" aria-label="Давление за 6 часов"></canvas></div>
+  </div>
+</section>
+
+<footer class="foot">
+  <button id="refresh" class="btn" type="button">Обновить</button>
+  <span id="last-update" class="muted"></span>
+  <span id="init-note" class="muted hidden">Инициализация&hellip;</span>
+</footer>
+</body>
+</html>

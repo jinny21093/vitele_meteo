@@ -1,0 +1,12 @@
+[Unit]
+Description=Weather aggregates hourly (v_hourly + forecast, stage B)
+After=weather-collector.service
+
+[Service]
+Type=oneshot
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/weather_aggregator.py hourly
+
+[Install]
+WantedBy=multi-user.target

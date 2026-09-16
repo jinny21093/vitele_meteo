@@ -1,0 +1,9 @@
+[Unit]
+Description=Weather DB backup (VACUUM INTO + integrity + gzip + rotate)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+ExecStart=/bin/bash /home/auditbot/weather-dash/weather_backup.sh

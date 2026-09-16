@@ -1,0 +1,18 @@
+[Unit]
+Description=Weather station collector (.101 -> weather.db v2) — этап A, weather-6
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/weather_collector.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

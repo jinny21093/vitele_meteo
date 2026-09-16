@@ -1,0 +1,17 @@
+[Unit]
+Description=Weather REST API (:8090, basic auth, read-only, stage B)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/weather_api.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
