@@ -32,9 +32,11 @@
   }
 
   /* --- шапка §4.0: свежесть + батарея --- */
-  function header(status, batteryRaw, events) {
+  function header(nowSec, status, batteryRaw, events) {
     const gap = status.gap_s;
-    let kind = "ok", text = "обновлено " + W.timeAgo(status.last_poll_ts, status.now || Math.floor(Date.now() / 1000));
+    // m-2: now — верхний уровень контракта /api/now, передаётся параметром
+    // (в status поля now нет); fallback Date.now() оставлен
+    let kind = "ok", text = "обновлено " + W.timeAgo(status.last_poll_ts, nowSec || Math.floor(Date.now() / 1000));
     if (gap > 600) { kind = "bad"; }
     else if (gap > 120) { kind = "warn"; }
     W.setFreshness(kind, text);
@@ -213,7 +215,7 @@
     renderCards(d);
     const nowSec = d.now || Math.floor(Date.now() / 1000);
     await Promise.all([renderLastEvent(nowSec), renderSparks(nowSec)]);
-    header(d.status, (d.current || {}).battery_raw, headerCache);
+    header(d.now, d.status, (d.current || {}).battery_raw, headerCache);
     const lu = $("last-update");
     if (lu) lu.textContent = "обновлено в " + W.fmtTime(nowSec);
     W.banner(null);
