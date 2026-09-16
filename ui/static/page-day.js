@@ -9,6 +9,7 @@
 
 (function () {
   const W = window.WEATHER;
+  const el = W.el;                 // m-17: общий хелпер app.js
   const $ = (id) => document.getElementById(id);
   const DAY_S = 86400;
   const charts = {};
@@ -28,13 +29,6 @@
     ["UVI", "uvi", 1],
     ["Свет, Вт/м²", "light_wm2", 0]
   ];
-
-  function el(tag, cls, text) {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined && text !== null) e.textContent = String(text);
-    return e;
-  }
 
   function series(rows, fi, name) {
     const i = fi[name];

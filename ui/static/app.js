@@ -241,6 +241,15 @@ window.WEATHER = (function () {
     return Number(v).toFixed(digits === undefined ? 1 : digits);
   }
 
+  /* --- DOM-хелпер (m-17): единый для всех страниц — локальные копии из
+     page-now/day/month удалены --- */
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+
   /* --- тема Chart.js: цвета из CSS-переменных (живёт с тумблером темы) --- */
   function chartTheme() {
     const css = getComputedStyle(document.documentElement);
@@ -296,7 +305,7 @@ window.WEATHER = (function () {
 
   return {
     UI_VERSION, ready, apiFetch, ApiError, poll, banner,
-    fmtTs, fmtTime, fmtDate, timeAgo, num, batteryOk, lsGet, lsSet,
+    fmtTs, fmtTime, fmtDate, timeAgo, num, batteryOk, el, lsGet, lsSet,
     setFreshness, setBattery,
     colorForTemp, colorForWind, colorForUvi, pressureTrend, RUMB_ARROW,
     chartTheme, refreshHeader,

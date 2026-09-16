@@ -5,17 +5,11 @@
 
 (function () {
   const W = window.WEATHER;
+  const el = W.el;                 // m-17: общий хелпер app.js
   const $ = (id) => document.getElementById(id);
   let chartT = null;
   let chartP = null;
   let poller = null;
-
-  function el(tag, cls, text) {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined && text !== null) e.textContent = String(text);
-    return e;
-  }
 
   function kv(label, value, valueCls) {
     const row = el("div", "kv");

@@ -8,6 +8,7 @@
 
 (function () {
   const W = window.WEATHER;
+  const el = W.el;                 // m-17: общий хелпер app.js
   const $ = (id) => document.getElementById(id);
   const DAYS_KEY = "weather-month-days";
   const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
@@ -17,13 +18,6 @@
   if (![7, 30, 90].includes(days)) days = 30;
   let trendChart = null;
   let poller = null;
-
-  function el(tag, cls, text) {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined && text !== null) e.textContent = String(text);
-    return e;
-  }
 
   /* локальные сутки дачи: номер дня и час из epoch */
   const TZ = () => W.tzOffset;
