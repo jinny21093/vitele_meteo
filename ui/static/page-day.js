@@ -276,6 +276,10 @@
     const lu = $("last-update");
     if (lu) lu.textContent = "обновлено в " + W.fmtTime(nowSec);
     W.banner(null);
+    // m-15: после banner(null), иначе тот же refresh тут же погасит баннер
+    if (h.truncated) {
+      W.banner("Данные за окно обрезаны лимитом", "warn");
+    }
   }
 
   W.ready.then(() => {
