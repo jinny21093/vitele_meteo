@@ -705,16 +705,32 @@ class UiHandler(BaseHTTPRequestHandler):
     def _api_meta(self):
         """§5.7: wmeta + последняя schema_migrations + 20 collector_log + db_health
         (ключ wmeta db_health пишет материализатор — на момент v1.2.2 может
-        отсутствовать, тогда null; клиент показывает «не проводилась»)."""
+        отсутствовать, тогда null; клиент показывает «не проводилась»).
+        m-5 (ревью r1-r3): каждая таблица — отдельным try/except: отсутствие
+        wmeta/schema_migrations/collector_log деградирует значение с WARN,
+        но не валит /api/meta в 503 — погода при этом живёт. Отказ БД на
+        коннекте (db_open) по-прежнему уходит в 503 (do_GET)."""
         con = db_open(self.server.db_path)
         try:
-            wmeta = {k: v for k, v in con.execute("SELECT key, value FROM wmeta")}
-            mig = con.execute("SELECT version, applied_at, description "
-                              "FROM schema_migrations ORDER BY version DESC "
-                              "LIMIT 1").fetchone()
-            clog = con.execute("SELECT ts, status, latency_ms, bytes, error "
-                               "FROM collector_log ORDER BY ts DESC "
-                               "LIMIT 20").fetchall()
+            try:
+                wmeta = {k: v for k, v in con.execute("SELECT key, value FROM wmeta")}
+            except sqlite3.OperationalError as e:
+                wmeta = {}
+                alog("WARN", f"meta: wmeta unavailable, degraded err={e}")
+            try:
+                mig = con.execute("SELECT version, applied_at, description "
+                                  "FROM schema_migrations ORDER BY version DESC "
+                                  "LIMIT 1").fetchone()
+            except sqlite3.OperationalError as e:
+                mig = None
+                alog("WARN", f"meta: schema_migrations unavailable, degraded err={e}")
+            try:
+                clog = con.execute("SELECT ts, status, latency_ms, bytes, error "
+                                   "FROM collector_log ORDER BY ts DESC "
+                                   "LIMIT 20").fetchall()
+            except sqlite3.OperationalError as e:
+                clog = []
+                alog("WARN", f"meta: collector_log unavailable, degraded err={e}")
         finally:
             con.close()
         db_health = None
