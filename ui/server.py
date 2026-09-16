@@ -536,7 +536,19 @@ class UiHandler(BaseHTTPRequestHandler):
         return 404
 
     def do_POST(self):  # noqa: N802
-        """§3: do_POST -> 405, исключений нет — UI полностью read-only."""
+        """§3: POST -> 405, исключений нет — UI полностью read-only.
+        m-12 (ревью r1-r3): проходит через _check_auth как GET — лимит
+        неудачных логинов (§3), 429/401 и лог применяются и к POST;
+        успешная авторизация логируется WARN-строкой 405."""
+        ip = self.client_address[0]
+        self._auth_user = None
+        ok, code = self._check_auth(ip)
+        if not ok:
+            return
+        line = f"{self.command} {self.path[:200]} 405 ip={ip}"
+        if self._auth_user:
+            line += f" user={self._auth_user}"
+        alog("WARN", line)
         self._respond(405, "405 method not allowed\n", "text/plain; charset=utf-8",
                       "no-store", extra=(("Allow", "GET"),))
 
