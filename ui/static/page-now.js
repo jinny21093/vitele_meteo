@@ -213,7 +213,17 @@
 
   /* --- один цикл обновления --- */
   async function refresh() {
-    const d = await W.apiFetch("/api/now");
+    let d;
+    try {
+      d = await W.apiFetch("/api/now");
+    } catch (e) {
+      // m-13: «Инициализация…» живёт в initMode (пустая БД, retry 10 с)
+      if (e && e.initMode) {
+        const note = $("init-note");
+        if (note) note.classList.remove("hidden");
+      }
+      throw e;                       // retry 10 с сохраняется
+    }
     $("init-note").classList.add("hidden");
     renderCards(d);
     const nowSec = d.now || Math.floor(Date.now() / 1000);
