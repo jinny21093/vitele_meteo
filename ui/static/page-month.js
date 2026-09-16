@@ -151,6 +151,10 @@
           cell.title = W.fmtDate(r[fi.day_epoch]) + ": осадки " +
             (mm === null ? "—" : mm.toFixed(1)) + " мм";
           if (r[fi.day_epoch] === todayStart) cell.classList.add("cal-today");
+        } else {
+          // m-18: «нет данных» (строки в v_daily нет) — отличимо от «0 мм»
+          cell.classList.add("cal-nodata");
+          cell.title = "нет данных";
         }
         grid.appendChild(cell);
       }

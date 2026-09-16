@@ -314,6 +314,9 @@ a { color: var(--accent); text-decoration: none; }
 .cal-rain3 { background: rgba(91, 155, 213, .50); }
 .cal-rain4 { background: rgba(91, 155, 213, .72); }
 .cal-today { border: 2px solid var(--accent); }
+/* m-18: день без строки v_daily — пунктир и приглушение;
+   визуально отличим от сухого дня (0 мм, обычная рамка) */
+.cal-nodata { border-style: dashed; background: var(--chip); opacity: .6; }
 
 /* --- мобильная вёрстка (§0.8: mobile-friendly, desktop-first) --- */
 @media (max-width: 900px) {
