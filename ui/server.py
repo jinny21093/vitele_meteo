@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather-ui server.py v0.2.0 (U0-U3) — дашборд погодной станции, stdlib-only.
+"""weather-ui server.py v0.2.1 (U0-U3 + фиксы ревью GLM r1-r3) — дашборд
+погодной станции, stdlib-only.
 
 ТЗ: weather-ui-spec.md v1.2.2 + патч v1.2.3 (ревью GLM U0+U1). Задача: weather-ui-2
 (U2 «Сутки» + U3 «Месяц»). Впереди: U4 События (overlap-семантика окна §5.5),
 U5 Прогноз, U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+
+  v0.2.1 Фиксы ревью r1-r3 (см. docs/reviews/weather-ui-fixtask-u2u3-glm.md):
+        M-3 Cache-Control no-cache для html/js/css (отклонение от §5.0,
+        патч ТЗ v1.2.4 заказан); M-4 required-статика покрывает U2/U3;
+        m-4 валидация HISTORY_DEFAULT_FIELDS на старте; m-5 деградация
+        _api_meta по таблицам; m-12 do_POST через _check_auth.
 
   §5.3/§5.4 /api/hourly -> v_hourly, /api/daily -> v_daily (реальные имена этапа B,
         A-2); fields = список ТЗ ∩ PRAGMA table_info на старте; rows — массивы (A-10).
@@ -62,7 +69,7 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 
 # --- фиксированные списки (§0.7: имена/типы — только whitelist) ---
 # Типы событий: полный каталог патча v1.2.3 §5.5 (21 тип) — этап A (коллектор) +
