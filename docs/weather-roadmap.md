@@ -1,6 +1,6 @@
 # Метеостанция .101 — roadmap внедрения
 
-**Обновлено:** 2026-09-16 (weather-8)
+**Обновлено:** 2026-09-18 (UI-деплой U0-U3)
 **Роль документа:** единственная точка правды для реализации. Канон = ТЗ v2.0
 (`network/weatherboard_v2_analitic.md`, исторический артефакт) + дельты из §3
 этого файла (свод правок агента и DeepSeek, согласованный владельцем) =
@@ -20,6 +20,7 @@
   приняты; микро-правки агента — в §3 с пометками.
 - Решения владельца (weather-4) зафиксированы в §2. **ЭТАП A ВЫПОЛНЕН (weather-6, ночь 16.09): приёмка ALL_PASS, снепшот — `network/snapshots/2026-09-16-weather6.md`. Этап B открыт.**
 - **ЭТАП B ВЫПОЛНЕН (weather-8, 16.09):** агрегаторы hourly/daily, тренды, Zambretti+Sager, REST API :8090, Kuma HTTP-монитор id=75; приёмка `verify_stage_b.sh` → ALL CHECKS PASSED (9/9); снепшот — `network/snapshots/2026-09-16-weather8.md`. Дальше — бэклог C/D (D3, ≥30 дней истории) и UI по `weather-ui-spec.md` (D12).
+- **UI U0-U3 = DEPLOYED (v0.2.2, 2026-09-17):** деплой-смоук на vitele — ALL STEPS PASSED (шаги 0–6 + прокси). Запуск `setsid nohup python3 ui/server.py` из `~/weather-dash/ui`, порт **8089**, bind 192.168.8.146 + 10.147.17.101 (LAN+ZeroTier), basic-auth (креды `~/.weather-ui-credentials`, 600), health 200 без auth, статика 13 файлов, /api/history с rain_total_mm. **Запуск вне systemd до U7** (юнит — отдельным заданием; reboot процесс не переживёт). Код = origin/main `2394c8f` (ревью r4-r6 закрыты, смоки 93/0). Для U7 от деплоя: Kuma-монитор для UI — только GET (HEAD даёт 501, do_HEAD нет); 127.0.0.1 вне BIND_HOSTS (спека §2.3 — только явные приватные IP).
 
 ---
 
@@ -198,3 +199,4 @@ WantedBy=multi-user.target
   материализаторы hourly/daily (+rolling-события), тренды по окнам, forecast
   (persistence/zambretti/sager_day, миграция v3 forecast.text), REST API :8090
   (basic auth, /health), Kuma HTTP id=75. Детали — снепшот 2026-09-16-weather8.
+- **v1.4 (UI-деплой, 18.09):** §1 — U0-U3 = DEPLOYED v0.2.2 (2026-09-17): смоук ALL STEPS PASSED, порт 8089 (LAN+ZT), запуск вне systemd до U7. Код — origin/main 2394c8f.
