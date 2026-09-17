@@ -43,8 +43,9 @@ U5 Прогноз, U6 Настройки+export.csv, U7 systemd+Kuma+verify.
         threading.Lock -> 429 + Retry-After: 60; успех сбрасывает счётчик; IP —
         handler.client_address[0] (прямой REMOTE_ADDR, без X-Forwarded-For).
   §5.0  Заголовки: nosniff/DENY/no-referrer на ВСЕ ответы; CSP — на HTML;
-        Cache-Control: static -> public,max-age=86400 + ETag(sha256) + 304 +
-        Vary: Accept-Encoding; /api/* -> no-store; HTML -> no-cache.
+        Cache-Control (факт M-3, r4-2): html/js/css -> no-cache (+ ETag(sha256)
+        + 304 + Vary: Accept-Encoding); бинарные ассеты (.svg/.png/.ico/.woff2)
+        -> public,max-age=86400; /api/* -> no-store.
   §5.0  Gzip статики — пре-компрессия на старте, кэш bytes в RAM.
   §9    Лог: stdout -> journald, ISO8601 LEVEL msg key=value. INFO — запросы;
         WARN — 4xx и > 1 с; ERROR — 5xx/исключения. Authorization/пароли не
