@@ -3,10 +3,17 @@
 **Объект:** визуальный дашборд поверх `weather.db`  
 **Хост:** Debian 12 VM (Hyper-V), x86\_64, 1 vCPU, ~2.6 ГБ RAM, ~7.4 ГБ свободно  
 **Сеть:** LAN-only, порт 8089 (биндинг на LAN-интерфейс)  
-**Версия документа:** 1.2.4  
+**Версия документа:** 1.2.5  
 **Связанные документы:** `weather-roadmap.md` (этапы A/B/C), `weatherstation.md`, `weatherboard_v2.1_analitic.md`  
 **Условие внедрения:** после успешного этапа B (есть `v_hourly`, `v_daily`, `forecast`, стабильный `current` — последняя строка `weather`, патч v1.2.3 §5.1)  
 **История:** изменения v1.0→v1.1, v1.1→v1.2, v1.2→v1.2.1 — в архивных версиях документа.
+
+## Changelog v1.2.4 → v1.2.5
+
+| # | Изменение |
+| --- | --- |
+| 1 | §4.4: экран «События» — окно: селектор 1/7/30/90 дней, по умолчанию 7; выбор — в localStorage (реализация U4, v0.3.0) |
+| 2 | §5.5: зафиксирован порядок выдачи — `ORDER BY ts_start DESC` (свежие сверху; клиент сохраняет порядок сервера внутри групп дат) |
 
 ## Changelog v1.2.2 → v1.2.4
 
@@ -157,7 +164,7 @@ Heatmap дни×часы из `/api/hourly`; календарь осадков 
 
 ### 4.4. «События» (/events) — polling 60 с
 
-Таймлайн, группировка по датам в TZ дачи. Фильтры: тип (мультиселект), severity. Клик → карточка с `context` (распарсенный JSON). При `truncated: true` — баннер «показаны не все события, сузьте окно».
+Таймлайн, группировка по датам в TZ дачи. Фильтры: тип (мультиселект), severity. Клик → карточка с `context` (распарсенный JSON). При `truncated: true` — баннер «показаны не все события, сузьте окно». Окно: селектор 1/7/30/90 дней, по умолчанию 7; выбор — в localStorage (v1.2.5).
 
 ### 4.5. «Прогноз» (/forecast) — polling 15 мин
 
@@ -262,6 +269,7 @@ sql
 WHERE (ts\_start >= ? AND ts\_start <= ?)   OR (ts\_start <  ? AND (ts\_end IS NULL OR ts\_end >= ?))
 
 Клиент показывает `ts_start < from` как «идёт с более раннего времени». Параметр `include_open` отменён.
+**Порядок выдачи (v1.2.5):** строки отдаются в `ORDER BY ts_start DESC` — свежие сверху; клиент группирует по датам в TZ дачи, сохраняя порядок сервера внутри групп.
 
 **Каталог типов (21, патч v1.2.3):** FROST, HARD\_FREEZE, FOG, STORM\_APPROACH, THUNDER\_RISK, HEAVY\_RAIN, DOWNPOUR, STRONG\_WIND, HURRICANE\_GUST, HEATWAVE, DRY\_SPELL, CALM, RAPID\_TEMP\_DROP, RAPID\_TEMP\_RISE, PRESSURE\_CRASH, RAIN\_COUNTER\_RESET, SENSOR\_MISSING, SENSOR\_STUCK, SENSOR\_DRIFT, SENSOR\_ANOMALY, BATTERY\_LOW. Фильтр по типу вне каталога → 400.
 
