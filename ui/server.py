@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather-ui server.py v0.2.2 (U0-U3 + фиксы ревью GLM r1-r6) — дашборд
+"""weather-ui server.py v0.3.0 (U0-U4 + фиксы ревью GLM r1-r6) — дашборд
 погодной станции, stdlib-only.
 
-ТЗ: weather-ui-spec.md v1.2.2 + патч v1.2.3 (ревью GLM U0+U1). Задача: weather-ui-2
-(U2 «Сутки» + U3 «Месяц»). Впереди: U4 События (overlap-семантика окна §5.5),
-U5 Прогноз, U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+ТЗ: weather-ui-spec.md v1.2.5. Задача: weather-ui-3 (U4 «События»).
+Впереди: U5 Прогноз, U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+
+  v0.3.0 U4 События: /api/events — overlap-семантика окна (§5.5, канон
+        v1.2.4): видно событие, начавшееся внутри окна, ЛИБО начавшееся
+        раньше и открытое/закрывшееся после from (include_open отменён);
+        overlap-условие во внешних скобках — иначе IN-фильтр типов
+        применяется только к левой ветке (приоритет AND/OR); required-
+        статика + events.html/page-events.js (M-4); экран /events (§4.4).
 
   v0.2.2 Ревью r4-r6 (см. отчёты r4-r6): do_POST — соединение закрывается
         в любом исходе (close_connection первой строкой, r4-1/r5-1;
@@ -76,12 +82,13 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 
-SERVER_VERSION = "0.2.2"
+SERVER_VERSION = "0.3.0"
 
 # --- фиксированные списки (§0.7: имена/типы — только whitelist) ---
 # Типы событий: полный каталог патча v1.2.3 §5.5 (21 тип) — этап A (коллектор) +
 # этап B (материализатор) + будущие типы аналитики; фильтр по ещё не существующему
-# типу вернёт пусто — безвредно (решение ревью A-9). Overlap-семантика окна — U4.
+# типу вернёт пусто — безвредно (решение ревью A-9). Overlap-семантика окна —
+# v0.3.0 (§5.5).
 EVENT_TYPES = ("FROST", "HARD_FREEZE", "FOG", "STORM_APPROACH", "THUNDER_RISK",
                "HEAVY_RAIN", "DOWNPOUR", "STRONG_WIND", "HURRICANE_GUST",
                "HEATWAVE", "DRY_SPELL", "CALM", "RAPID_TEMP_DROP",
@@ -120,7 +127,8 @@ WINDOW_DELTA_COLS = ("pressure_rel_mmhg", "outdoor_temp_c")
 COLLECTOR_OK_GAP = 180          # сек: коллектор пишет раз в 60 с; 3 цикла = ok
 MAX_EPOCH = 2 ** 62             # защита от bigint, который не лезет в sqlite3
 
-# HTML-страницы (маршрут -> файл в static/). U4-U6 — пока заглушки.
+# HTML-страницы (маршрут -> файл в static/). U4 — настоящий экран (v0.3.0);
+# U5-U6 — пока заглушки.
 PAGES = {"/": "index.html", "/day": "day.html", "/month": "month.html",
          "/events": "events.html", "/forecast": "forecast.html",
          "/settings": "settings.html"}
@@ -309,13 +317,14 @@ def load_static(root):
                 "ctype": ctype, "raw": raw, "gz": gz,
                 "etag": '"' + hashlib.sha256(raw).hexdigest()[:32] + '"',
             }
-    # M-4 (ревью r1-r3): required покрывает все экраны U0-U3. Заглушки U4-U6
-    # (events/forecast/settings.html) сознательно НЕ в списке — их отсутствие
-    # старт валилить не должно.
+    # M-4 (ревью r1-r3): required покрывает экраны U0-U4 (U4, v0.3.0: +events).
+    # Заглушки U5-U6 (forecast/settings.html) сознательно НЕ в списке — их
+    # отсутствие старт валилить не должно.
     for required in ("/static/index.html", "/static/style.css", "/static/app.js",
                      "/static/vendor/chart.min.js", "/static/page-now.js",
                      "/static/day.html", "/static/month.html",
                      "/static/page-day.js", "/static/page-month.js",
+                     "/static/events.html", "/static/page-events.js",
                      "/static/icons/favicon.svg"):
         if required not in cache:
             alog("ERROR", f"startup: required static file missing file={required}")
@@ -795,7 +804,10 @@ class UiHandler(BaseHTTPRequestHandler):
         """§5.5: окно <= 90 д, types/severity CSV по фиксированным спискам,
         LIMIT 5000 + truncated; единый конверт {from, to, rows, truncated};
         context парсим на сервере: битый -> null + WARN с event_id и фрагментом
-        <= 100 символов (один мусорный ряд не валит эндпоинт)."""
+        <= 100 символов (один мусорный ряд не валит эндпоинт).
+        v0.3.0 (канон §5.5, патч v1.2.3): семантика окна — ПЕРЕКРЫТИЕ:
+        видно событие, начавшееся внутри окна, ЛИБО начавшееся раньше и
+        открытое/закрывшееся после from; include_open отменён."""
         qs = parse_qs(query, keep_blank_values=True)
         win = self._required_window(qs, EVENTS_WINDOW)
         if win is None:
@@ -811,8 +823,13 @@ class UiHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "unknown severity",
                              "allowed": list(EVENT_SEVERITIES)})
             return 400
-        where = "ts_start >= ? AND ts_start <= ?"
-        params = [frm, to]
+        # v0.3.0 (§5.5): overlap-окно. ВСЁ OR-условие — во внешних скобках, ДО
+        # дописывания "AND event_type IN (...)" ниже: без скобок приоритет AND
+        # над OR применит IN-фильтр только к правой ветке, и события внутри
+        # окна потекут мимо фильтра. Параметры по порядку: frm, to, frm, frm.
+        where = ("((ts_start >= ? AND ts_start <= ?) "
+                 "OR (ts_start < ? AND (ts_end IS NULL OR ts_end >= ?)))")
+        params = [frm, to, frm, frm]
         if types:
             where += " AND event_type IN (%s)" % ",".join(["?"] * len(types))
             params += types
