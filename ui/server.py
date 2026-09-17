@@ -547,7 +547,15 @@ class UiHandler(BaseHTTPRequestHandler):
         """§3: POST -> 405, исключений нет — UI полностью read-only.
         m-12 (ревью r1-r3): проходит через _check_auth как GET — лимит
         неудачных логинов (§3), 429/401 и лог применяются и к POST;
-        успешная авторизация логируется WARN-строкой 405."""
+        успешная авторизация логируется WARN-строкой 405.
+        r5-1 (ревью r5): close_connection=True — первой строкой, до auth:
+        соединение обязано закрываться в ЛЮБОМ исходе POST (401/429/503
+        тоже) — keep-alive с непрочитанным телом недопустим."""
+        # r4-1/r5-1 (ревью r4/r5): тело POST не читается — drain не нужен,
+        # соединение закрывается. Флаг ставится ДО auth-ветки: после неё
+        # 401/429/503 уходили бы по keep-alive с непрочитанным телом.
+        # Финальный 405 дополнительно несёт заголовок Connection: close.
+        self.close_connection = True
         ip = self.client_address[0]
         self._auth_user = None
         ok, code = self._check_auth(ip)
@@ -557,10 +565,6 @@ class UiHandler(BaseHTTPRequestHandler):
         if self._auth_user:
             line += f" user={self._auth_user}"
         alog("WARN", line)
-        # r4-1 (ревью r4): тело POST не читаем — drain не нужен, соединение
-        # закрывается: close_connection=True + Connection: close в ответе,
-        # чтобы клиент не переиспользовал сокет с непрочитанным телом.
-        self.close_connection = True
         self._respond(405, "405 method not allowed\n", "text/plain; charset=utf-8",
                       "no-store", extra=(("Allow", "GET"), ("Connection", "close")))
 
