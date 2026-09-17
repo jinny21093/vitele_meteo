@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""smoke-тест weather-ui server.py (U0-U3) на копии живой БД — ЛОКАЛЬНО, без VM.
+"""smoke-тест weather-ui server.py (U0-U4) на копии живой БД — ЛОКАЛЬНО, без VM.
 
 Проверки: health без auth; 401 + WWW-Authenticate (диалог); 405 POST; POST
 без auth с телом -> 401 + закрытие соединения (r4-1/r5-1); авторизованный
@@ -8,7 +8,9 @@ POST -> 405 + Connection: close + закрытие (r6-4); окна
 7д/90д/90д/365д; whitelist fields/types/severity; конверты {from,to,rows[,...]};
 /api/now без id/schema_version (§5.1 v1.2.3); user= в authed-логе (§9 v1.2.3);
 битый context -> null; ETag/304/gzip; CSP/no-store/nosniff; обход пути;
-rate-limit 429 + Retry-After; graceful SIGTERM.
+rate-limit 429 + Retry-After; graceful SIGTERM;
+U4 (§5.5, v0.3.0): overlap-семантика окна T1a-T1f (вкл. приоритет скобок —
+T1e), /events 200 без Chart.js, no-inline, старт без page-events.js -> exit 1.
 
 Запуск: python scripts/weather_ui_smoke.py"""
 import base64
@@ -87,6 +89,26 @@ def prepare():
             (now - 600, None, "SENSOR_MISSING", "mid", 700,
              json.dumps({"prev_ts": now - 600})),           # открытое событие
         ])
+    # U4-T1 (§5.5 overlap, v0.3.0): события слева/справа от основного окна
+    # (from=now-86400, to=now): a) открыт слева -> видно; b) закрыт до from ->
+    # нет; c) перекрывает from -> видно; d) старт после to -> нет
+    con.executemany(
+        "INSERT INTO events (ts_start, ts_end, event_type, severity, value, context) "
+        "VALUES (?,?,?,?,?,?)", [
+            (now - 5 * 86400, None, "DRY_SPELL", "low", 0.0,
+             json.dumps({"rain_7d": 0})),                   # a: открыт слева
+            (now - 5 * 86400, now - 4 * 86400, "HEATWAVE", "mid", 29.1,
+             json.dumps({"t_max": 29.1})),                  # b: закрыт до from
+            (now - 5 * 86400, now - 3600, "STRONG_WIND", "high", 16.2,
+             json.dumps({"gust": 16.2})),                   # c: перекрывает from
+            (now + 3600, None, "FOG", "low", None, None),  # d: старт после to
+        ])
+    # U4-T1f: 5100 событий внутри окна -> LIMIT 5000 + truncated=true
+    con.executemany(
+        "INSERT INTO events (ts_start, ts_end, event_type, severity, value, context) "
+        "VALUES (?,?,?,?,?,?)",
+        [(now - k * 10, now - k * 10 + 5, "CALM", "low", 0.8, None)
+         for k in range(5100)])
     # v_hourly/v_daily: 5 часов и 3 суток до now (для U2/U3 — §5.3/§5.4)
     h0 = (now // 3600) * 3600
     con.executemany(
@@ -111,11 +133,11 @@ def prepare():
     with open(cred, "w") as f:
         f.write(f"{USER}:{PASS}\n")
     os.chmod(cred, 0o600)
-    return db, cred
+    return db, cred, now          # fixnow: ts_start-ассерты — относительно него
 
 
 def main():
-    db, cred = prepare()
+    db, cred, fixnow = prepare()
     log_path = os.path.join(TESTDIR, "server.log")
     logf = open(log_path, "w")
     proc = subprocess.Popen(
@@ -279,6 +301,51 @@ def main():
               {"FROST", "SENSOR_MISSING"})
         st, _, body = req(f"/api/events?from={now - 91 * 86400}&to={now}", auth="valid")
         check("events window>90d 400", st == 400)
+
+        # --- U4: overlap-семантика окна (§5.5, v0.3.0) ---
+        # e (ПРИОРИТЕТ, U4-S1): событие FROST-фикстуры внутри окна + фильтр по
+        # ДРУГОМУ типу -> 0 строк. Ловит потерю внешних скобок overlap-условия:
+        # без них "(A AND B) OR (C AND type IN ...)" пропускает ветку A мимо
+        # фильтра (приоритет AND над OR) — и FROST утёк бы в ответ.
+        st, _, body = req(f"/api/events?from={now - 86400}&to={now}"
+                          "&types=BATTERY_LOW", auth="valid")
+        j = json.loads(body)
+        check("U4-T1e overlap+filter: window rows bypass type filter (скобки)",
+              st == 200 and j["rows"] == [], str(j.get("rows"))[:120])
+        # a: открытое, ts_start < from -> ВИДИМО (ветка ts_end IS NULL)
+        st, _, body = req(f"/api/events?from={now - 86400}&to={now}"
+                          "&types=DRY_SPELL", auth="valid")
+        j = json.loads(body)
+        check("U4-T1a overlap: open event started before from -> visible",
+              st == 200 and len(j["rows"]) == 1 and
+              j["rows"][0]["ts_start"] == fixnow - 5 * 86400 and
+              j["rows"][0]["ts_end"] is None and
+              j["rows"][0]["duration_s"] is None, str(j["rows"])[:160])
+        # b: закрытое, ts_end < from -> НЕ видно
+        st, _, body = req(f"/api/events?from={now - 86400}&to={now}"
+                          "&types=HEATWAVE", auth="valid")
+        j = json.loads(body)
+        check("U4-T1b overlap: closed event ended before from -> invisible",
+              st == 200 and j["rows"] == [], str(j.get("rows"))[:120])
+        # c: началось слева, закрылось внутри окна -> ВИДИМО
+        st, _, body = req(f"/api/events?from={now - 86400}&to={now}"
+                          "&types=STRONG_WIND", auth="valid")
+        j = json.loads(body)
+        check("U4-T1c overlap: event spans from -> visible",
+              st == 200 and len(j["rows"]) == 1 and
+              j["rows"][0]["duration_s"] == 5 * 86400 - 3600, str(j["rows"])[:160])
+        # d: ts_start > to -> НЕ видно
+        st, _, body = req(f"/api/events?from={now - 86400}&to={now}"
+                          "&types=FOG", auth="valid")
+        j = json.loads(body)
+        check("U4-T1d overlap: starts after to -> invisible",
+              st == 200 and j["rows"] == [], str(j.get("rows"))[:120])
+        # f: 5100 событий в окне -> truncated=true, ровно 5000 строк
+        st, _, body = req(f"/api/events?from={now - 86400}&to={now}", auth="valid")
+        j = json.loads(body)
+        check("U4-T1f overlap: >5000 events -> truncated true, 5000 returned",
+              st == 200 and j["truncated"] is True and len(j["rows"]) == 5000,
+              f"n={len(j.get('rows', []))} truncated={j.get('truncated')}")
         # реальный gap копии БД > 6 ч: с инжектированной свежей строкой
         # (ts=now) collector_ok обязан стать True, а окно 6ч — непустым
         st, _, body = req("/api/now", auth="valid")
@@ -339,6 +406,15 @@ def main():
               b"page-day.js" in body)
         st, _, body = req("/month", auth="valid")
         check("/month 200", st == 200 and b"page-month.js" in body)
+        # U4-C1 (§4.4): /events — настоящий экран, БЕЗ Chart.js (таймлайн — DOM)
+        st, _, body = req("/events", auth="valid")
+        check("/events 200 + page-events.js", st == 200 and
+              b"page-events.js" in body)
+        check("events page без Chart.js (§4.4)", b"chart.min.js" not in body)
+        check("events no inline scripts", b"<script>" not in body.replace(
+            b'<script src=', b'<script-'))          # только src, не inline
+        st, _, _ = req("/static/page-events.js", auth="valid")
+        check("page-events.js 200", st == 200)
         st, _, _ = req("/settings", auth="valid")
         check("/settings 200", st == 200)
         st, _, _ = req("/", auth="wrong")
@@ -412,6 +488,30 @@ def main():
         proc2.send_signal(signal.SIGTERM)
         rc2 = proc2.wait(timeout=15)
         check("second SIGTERM exit 0", rc2 == 0, f"rc={rc2}")
+
+        # --- U4-S4 (M-4): старт без page-events.js -> required static, exit 1.
+        # После proc2 (иначе её старт упал бы): page-events.js удаляется из
+        # BASE/static, сервер обязан отказаться стартовать (rc=1, ERROR в лог).
+        # Самовосстановление: байты читаются ДО удаления и пишутся обратно
+        # после проверок — повторный прогон смоука не ломается.
+        pej = os.path.join(BASE, "static", "page-events.js")
+        with open(pej, "rb") as f:
+            pej_bytes = f.read()
+        os.remove(pej)
+        proc3 = subprocess.Popen(
+            [sys.executable, os.path.join(BASE, "server.py"),
+             "--db", db, "--port", "8201", "--bind", "127.0.0.1",
+             "--cred", cred, "--static", os.path.join(BASE, "static")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=BASE)
+        rc3 = proc3.wait(timeout=20)
+        log3 = proc3.stdout.read().decode("utf-8", "replace")
+        check("U4-S4: missing page-events.js -> exit 1", rc3 == 1, f"rc={rc3}")
+        check("U4-S4: startup error names page-events.js",
+              "required static file missing" in log3 and
+              "page-events.js" in log3,
+              log3.strip().splitlines()[-1] if log3.strip() else "")
+        with open(pej, "wb") as f:
+            f.write(pej_bytes)
 
         print(f"\n{'=' * 46}\nSMOKE: {PASSES} OK, {len(FAILS)} FAIL"
               + (f" -> {FAILS}" if FAILS else " — ALL PASSED"))
