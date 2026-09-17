@@ -556,8 +556,12 @@ class UiHandler(BaseHTTPRequestHandler):
         if self._auth_user:
             line += f" user={self._auth_user}"
         alog("WARN", line)
+        # r4-1 (ревью r4): тело POST не читаем — drain не нужен, соединение
+        # закрывается: close_connection=True + Connection: close в ответе,
+        # чтобы клиент не переиспользовал сокет с непрочитанным телом.
+        self.close_connection = True
         self._respond(405, "405 method not allowed\n", "text/plain; charset=utf-8",
-                      "no-store", extra=(("Allow", "GET"),))
+                      "no-store", extra=(("Allow", "GET"), ("Connection", "close")))
 
     def log_message(self, fmt, *args):  # noqa: A003 — свой формат в do_GET (§9)
         return
