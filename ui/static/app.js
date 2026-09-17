@@ -2,6 +2,7 @@
 /* weather-ui app.js — общий клиентский слой (ТЗ weather-ui-spec.md §6).
    Единственная глобальная точка — window.WEATHER. UI_VERSION — semver КОДА
    (§4.0): major — ломает API-контракт, minor — новая фича/экран, patch — фикс.
+   v0.4.0 — U5 «Прогноз»: UI_VERSION 0.4.0 (новый экран = minor, §4.0).
    v0.3.0 — U4 «События»: refreshHeader — окно батареи 1 ч (§5.5: с overlap
    открытое BATTERY_LOW видно независимо от возраста события).
    v0.2.2 — ревью r4-r6: page-day — destroy графиков при пустых rows (r4-4),
@@ -10,7 +11,7 @@
    apiFetch, poll busy-guard, fmtTs/localStorage/el-хелперы, 429/Retry-After). */
 
 window.WEATHER = (function () {
-  const UI_VERSION = "0.3.0";          // U0-U4 (semver, §4.0)
+  const UI_VERSION = "0.4.0";          // U0-U5 (semver, §4.0)
   // держать синхронным с ui/config.py TZ_FALLBACK (C, ревью r1-r3)
   const TZ_FALLBACK = 10800;           // Europe/Moscow fixed (wmeta.tz_policy)
   const POLL_BACKOFF_MAX_MS = 300000;  // §6: backoff до 5 мин

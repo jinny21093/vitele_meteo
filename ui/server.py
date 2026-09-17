@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather-ui server.py v0.3.0 (U0-U4 + фиксы ревью GLM r1-r6) — дашборд
+"""weather-ui server.py v0.4.0 (U0-U5 + фиксы ревью GLM r1-r6) — дашборд
 погодной станции, stdlib-only.
 
-ТЗ: weather-ui-spec.md v1.2.5. Задача: weather-ui-3 (U4 «События»).
-Впереди: U5 Прогноз, U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+ТЗ: weather-ui-spec.md v1.2.5 (§5.6 уточняется фактом U5 — v1.2.6). Задача:
+weather-ui-4 (U5 «Прогноз»). Впереди: U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+
+  v0.4.0 U5 Прогноз: /api/forecast — конверт из таблицы forecast этапа B
+        (§5.6): формулы (Zambretti/Sager/persistence) НЕ дублируем — пишет
+        weather_aggregator в hourly-прогоне (systemd timer *:02:00), читаем
+        последний прогон (MAX(issued_at)); available:false (пустая таблица)
+        — 200, не ошибка; stale (U5-S2) — возраст > 2 прогонов; required-
+        статика + forecast.html/page-forecast.js (M-4); экран /forecast (§4.5).
 
   v0.3.0 U4 События: /api/events — overlap-семантика окна (§5.5, канон
         v1.2.4): видно событие, начавшееся внутри окна, ЛИБО начавшееся
@@ -82,7 +89,7 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 
 # --- фиксированные списки (§0.7: имена/типы — только whitelist) ---
 # Типы событий: полный каталог патча v1.2.3 §5.5 (21 тип) — этап A (коллектор) +
@@ -107,6 +114,9 @@ EVENTS_WINDOW = 90 * 86400      # §5.5: окно <= 90 дней
 HISTORY_LIMIT = 50000           # §5.2
 EVENTS_LIMIT = 5000             # §5.5
 HOURLY_WINDOW = 90 * 86400      # §5.3: окно <= 90 дней (<= 2160 строк)
+# U5-S2 (v0.4.0): этап B пересчитывает прогноз ежечасно (timer *:02:00) —
+# свежий прогон старше 2 ч = 2 пропущенных прогона подряд -> stale:true
+FORECAST_STALE_S = 7200
 DAILY_WINDOW = 365 * 86400      # §5.4: окно <= 365 дней
 # §5.3: поля /api/hourly — фиксированный список ТЗ; на старте пересекается с
 # реальными колонками v_hourly (A-2: имена этапа B), порядок — как в ТЗ.
@@ -127,8 +137,8 @@ WINDOW_DELTA_COLS = ("pressure_rel_mmhg", "outdoor_temp_c")
 COLLECTOR_OK_GAP = 180          # сек: коллектор пишет раз в 60 с; 3 цикла = ok
 MAX_EPOCH = 2 ** 62             # защита от bigint, который не лезет в sqlite3
 
-# HTML-страницы (маршрут -> файл в static/). U4 — настоящий экран (v0.3.0);
-# U5-U6 — пока заглушки.
+# HTML-страницы (маршрут -> файл в static/). U4/U5 — настоящие экраны
+# (v0.3.0/v0.4.0); U6 — пока заглушка.
 PAGES = {"/": "index.html", "/day": "day.html", "/month": "month.html",
          "/events": "events.html", "/forecast": "forecast.html",
          "/settings": "settings.html"}
@@ -317,14 +327,15 @@ def load_static(root):
                 "ctype": ctype, "raw": raw, "gz": gz,
                 "etag": '"' + hashlib.sha256(raw).hexdigest()[:32] + '"',
             }
-    # M-4 (ревью r1-r3): required покрывает экраны U0-U4 (U4, v0.3.0: +events).
-    # Заглушки U5-U6 (forecast/settings.html) сознательно НЕ в списке — их
+    # M-4 (ревью r1-r3): required покрывает экраны U0-U5 (U5, v0.4.0:
+    # +forecast). Заглушка U6 (settings.html) сознательно НЕ в списке — её
     # отсутствие старт валилить не должно.
     for required in ("/static/index.html", "/static/style.css", "/static/app.js",
                      "/static/vendor/chart.min.js", "/static/page-now.js",
                      "/static/day.html", "/static/month.html",
                      "/static/page-day.js", "/static/page-month.js",
                      "/static/events.html", "/static/page-events.js",
+                     "/static/forecast.html", "/static/page-forecast.js",
                      "/static/icons/favicon.svg"):
         if required not in cache:
             alog("ERROR", f"startup: required static file missing file={required}")
@@ -543,8 +554,10 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._api_hourly(u.query)
         if path == "/api/daily":
             return self._api_daily(u.query)
-        if path in ("/api/forecast", "/api/export.csv"):
-            self._json(404, {"error": "endpoint planned for U5-U6, absent in U0-U3"})
+        if path == "/api/forecast":
+            return self._api_forecast()
+        if path == "/api/export.csv":
+            self._json(404, {"error": "endpoint planned for U6, absent in U0-U5"})
             return 404
         if path == "/favicon.ico":            # чтобы не шуметь 404 в логе
             return self._serve_static("/static/icons/favicon.svg")
@@ -748,6 +761,64 @@ class UiHandler(BaseHTTPRequestHandler):
             con.close()
         self._json(200, {"from": frm, "to": to, "fields": list(fields),
                          "rows": [list(r) for r in rows]})
+        return 200
+
+    def _api_forecast(self):
+        """§5.6 (U5, v0.4.0): прогноз этапа B из таблицы forecast — формулы НЕ
+        дублируем (принцип U5, ревью v2.1 п.8): пишет weather_aggregator
+        (write_forecasts, hourly-прогон timer *:02:00, issued_at=int(now)
+        прогона, UNIQUE(issued_at,target_ts,source)); читаем последний прогон
+        целиком по MAX(issued_at) — без параметров (окно не нужно).
+
+        Конверт (точная форма по разведке U5-R1/R2, миграция v3 + text):
+        {available: true, calc_ts, age_s, stale, zambretti: {text, confidence,
+        targets: [{target_ts, horizon_h}] × 2 (+6ч/+12ч)}, sager: {target_ts,
+        text, confidence} | null (ночью строка не пишется — 10<=h<16),
+        persistence: [{target_ts, horizon_h, t_out_c, p_rel_mmhg, rh_out_pct,
+        wind_ms, confidence}] × 3 (+1ч/+3ч/+6ч)}. Буква Замбретти в БД НЕ
+        пишется (только text "en — ru") — в конверте отсутствует (доложено).
+
+        U5-S2: этап B пересчитывает ежечасно -> stale = возраст >
+        FORECAST_STALE_S (2 пропущенных прогона подряд).
+        Прогноза нет (пустая таблица) -> 200 {"available": false} — не 503:
+        это не ошибка (§5.6), на живой VM не воспроизводится при живом этапе B.
+        """
+        con = db_open(self.server.db_path)
+        try:
+            calc_ts = con.execute("SELECT MAX(issued_at) FROM forecast").fetchone()[0]
+            if calc_ts is None:
+                self._json(200, {"available": False,
+                                 "reason": "no forecast rows: aggregator has not run yet"})
+                return 200
+            rows = con.execute(
+                "SELECT target_ts, source, t_out_c, p_rel_mmhg, rh_out_pct, "
+                "wind_ms, confidence, text FROM forecast WHERE issued_at=? "
+                "ORDER BY target_ts, source", (calc_ts,)).fetchall()
+        finally:
+            con.close()
+        age_s = max(0, int(time.time()) - calc_ts)
+        persistence, zam_targets = [], []
+        zam_text, zam_conf, sager = None, None, None
+        for tts, src, t_out, p_rel, rh, wind, conf, text in rows:
+            hz = max(0, (tts - calc_ts) // 3600)
+            if src == "persistence":
+                persistence.append({"target_ts": tts, "horizon_h": hz,
+                                    "t_out_c": t_out, "p_rel_mmhg": p_rel,
+                                    "rh_out_pct": rh, "wind_ms": wind,
+                                    "confidence": conf})
+            elif src == "zambretti":
+                if zam_text is None:
+                    zam_text, zam_conf = text, conf
+                zam_targets.append({"target_ts": tts, "horizon_h": hz})
+            elif src == "sager_day" and sager is None:
+                sager = {"target_ts": tts, "text": text, "confidence": conf}
+        zambretti = (None if zam_text is None else
+                     {"text": zam_text, "confidence": zam_conf,
+                      "targets": zam_targets})
+        self._json(200, {"available": True, "calc_ts": calc_ts,
+                         "age_s": age_s, "stale": age_s > FORECAST_STALE_S,
+                         "zambretti": zambretti, "sager": sager,
+                         "persistence": persistence})
         return 200
 
     def _api_meta(self):
