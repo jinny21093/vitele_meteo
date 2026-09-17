@@ -378,6 +378,15 @@ a { color: var(--accent); text-decoration: none; }
   word-break: break-word;
 }
 
+/* --- U5 «Прогноз» (§4.5): Замбретти крупно + persistence-таблица.
+      Все цвета — через переменные :root (тёмная тема покрывает как U4) --- */
+.fc-zam-ru { font-size: 1.35em; font-weight: 700; margin: 4px 0; }
+.fc-zam-en { font-size: .9em; }
+.fc-stale { color: var(--warn); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fc-night { font-size: 1.1em; color: var(--muted); font-style: italic; margin: 4px 0; }
+#fc-fresh { margin-bottom: 6px; font-variant-numeric: tabular-nums; }
+#fc-table table { margin: 4px 0; }
+
 /* --- мобильная вёрстка (§0.8: mobile-friendly, desktop-first) --- */
 @media (max-width: 900px) {
   .lower { grid-template-columns: 1fr 1fr; }

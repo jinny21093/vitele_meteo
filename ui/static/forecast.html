@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
 <script src="/static/app.js" defer></script>
+<script src="/static/page-forecast.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -25,14 +26,37 @@
 
 <div id="banner" class="banner hidden" role="alert"></div>
 
-<main class="placeholder-wrap">
-  <section class="card placeholder">
+<main class="charts-page">
+  <!-- U5-C2 (§4.5): состояние «прогноз не сформирован» — карточка вместо данных
+       (паттерн initMode); показывается при available:false или ошибке API -->
+  <section class="chart-card hidden" id="fc-init">
     <h2>Прогноз</h2>
-    <p>Экран появится в юните U5 (ТЗ weather-ui-spec.md §11).</p>
-    <p class="muted">Сейчас реализованы U0–U3: каркас (auth, health) и экраны «Сейчас», «Сутки», «Месяц».</p>
+    <div class="card-body" id="fc-init-body"></div>
+  </section>
+
+  <!-- U5-C1/C3 (§4.5): данные прогноза этапа B; свежесть — «рассчитан HH:MM»
+       + возраст, stale — жёлтым (fc-stale). Блоки деградируют по отдельности
+       (m-11). DOM-ID: fc-init, fc-init-body, fc-data, fc-fresh, fc-zam,
+       fc-table, fc-sager (+ refresh, last-update — как на всех экранах) -->
+  <section class="chart-card" id="fc-data">
+    <h2>Расчёт</h2>
+    <div id="fc-fresh"><span class="muted">загрузка&hellip;</span></div>
+
+    <h2>Замбретти</h2>
+    <div id="fc-zam"><span class="muted">загрузка&hellip;</span></div>
+
+    <h2>Ближайшие часы (persistence)</h2>
+    <div class="table-wrap" id="fc-table"><span class="muted">загрузка&hellip;</span></div>
+
+    <h2>Sager (дневной метод)</h2>
+    <div id="fc-sager"><span class="muted">загрузка&hellip;</span></div>
+    <p class="muted">Persistence — последний замер без изменений; ΔT/ΔP — относительно показаний сейчас. Sager считается на даче в 10:00–15:59 местного времени — ночью «Не применимо (ночь)».</p>
   </section>
 </main>
 
-<footer class="foot"><span id="last-update" class="muted"></span></footer>
+<footer class="foot">
+  <button id="refresh" class="btn" type="button">Обновить</button>
+  <span id="last-update" class="muted"></span>
+</footer>
 </body>
 </html>
