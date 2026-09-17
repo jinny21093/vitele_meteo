@@ -556,7 +556,9 @@ class UiHandler(BaseHTTPRequestHandler):
         успешная авторизация логируется WARN-строкой 405.
         r5-1 (ревью r5): close_connection=True — первой строкой, до auth:
         соединение обязано закрываться в ЛЮБОМ исходе POST (401/429/503
-        тоже) — keep-alive с непрочитанным телом недопустим."""
+        тоже) — keep-alive с непрочитанным телом недопустим.
+        r6-3 (ревью r6): auth-отказ (401/429/503) логируется WARN-строкой —
+        GET-брутфорс виден в journald, POST-брутфорс обязан быть виден тоже."""
         # r4-1/r5-1 (ревью r4/r5): тело POST не читается — drain не нужен,
         # соединение закрывается. Флаг ставится ДО auth-ветки: после неё
         # 401/429/503 уходили бы по keep-alive с непрочитанным телом.
@@ -566,6 +568,9 @@ class UiHandler(BaseHTTPRequestHandler):
         self._auth_user = None
         ok, code = self._check_auth(ip)
         if not ok:
+            # r6-3 (ревью r6): отказ auth логируется так же, как у GET
+            # (do_GET, finally: 4xx -> WARN) — без user=, без ms (t0 нет).
+            alog("WARN", f"{self.command} {self.path[:200]} {code} ip={ip}")
             return
         line = f"{self.command} {self.path[:200]} 405 ip={ip}"
         if self._auth_user:
