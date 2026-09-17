@@ -5,7 +5,7 @@
 **Сеть:** LAN-only, порт 8089 (биндинг на LAN-интерфейс)  
 **Версия документа:** 1.2.4  
 **Связанные документы:** `weather-roadmap.md` (этапы A/B/C), `weatherstation.md`, `weatherboard_v2.1_analitic.md`  
-**Условие внедрения:** после успешного этапа B (есть `agg_hourly`, `agg_daily`, `forecast`, стабильный `current`)  
+**Условие внедрения:** после успешного этапа B (есть `v_hourly`, `v_daily`, `forecast`, стабильный `current` — последняя строка `weather`, патч v1.2.3 §5.1)  
 **История:** изменения v1.0→v1.1, v1.1→v1.2, v1.2→v1.2.1 — в архивных версиях документа.
 
 ## Changelog v1.2.2 → v1.2.4
@@ -121,7 +121,7 @@ HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Basic realm="Weather", charset="UTF-8"
 Content-Type: text/plain; charset=utf-8
 
--   `do_POST` → 405 c `Connection: close` (исключений нет, UI полностью read-only; тело POST не читается — соединение закрывается).
+-   `do_POST` → 405 c `Connection: close` (исключений нет, UI полностью read-only; тело POST не читается — соединение закрывается). Закрытие — флагом сокета; заголовок `Connection: close` несёт только финальный 405.
     
 -   Rate-limit: 10 неудачных/мин/IP, словарь под `threading.Lock()`, затем 429 + `Retry-After: 60`. **При успешной авторизации счётчик неудач для IP сбрасывается.**
     
