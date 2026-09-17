@@ -128,6 +128,11 @@
         return;
       }
       const r = rows[0];                    // свежайшее (ORDER BY ts_start DESC)
+      if (r.ts_start < nowSec - 86400) {
+        // v0.3.0 (§5.5 overlap): событие началось раньше окна «сутки» —
+        // маркер тот же, что на /events (консистентность §5.5)
+        box.appendChild(el("span", "muted", "идёт с более раннего времени"));
+      }
       const head = el("div", "big", r.event_type);
       head.style.fontSize = "1.15em";
       const sevCls = r.severity === "high" ? "bad" : (r.severity === "mid" ? "warn" : "ok");

@@ -1,14 +1,16 @@
 "use strict";
-/* weather-ui app.js — общий клиентский слой (ТЗ weather-ui-spec.md v1.2.2 §6).
+/* weather-ui app.js — общий клиентский слой (ТЗ weather-ui-spec.md §6).
    Единственная глобальная точка — window.WEATHER. UI_VERSION — semver КОДА
    (§4.0): major — ломает API-контракт, minor — новая фича/экран, patch — фикс.
+   v0.3.0 — U4 «События»: refreshHeader — окно батареи 1 ч (§5.5: с overlap
+   открытое BATTERY_LOW видно независимо от возраста события).
    v0.2.2 — ревью r4-r6: page-day — destroy графиков при пустых rows (r4-4),
    версия — самоидентификация деплоя (r6-1).
    v0.2.1 — фиксы ревью GLM r1-r3 (battery whitelist, banner-таймер, таймаут
    apiFetch, poll busy-guard, fmtTs/localStorage/el-хелперы, 429/Retry-After). */
 
 window.WEATHER = (function () {
-  const UI_VERSION = "0.2.2";          // U2+U3 + фиксы ревью r1-r6 (semver, §4.0)
+  const UI_VERSION = "0.3.0";          // U0-U4 (semver, §4.0)
   // держать синхронным с ui/config.py TZ_FALLBACK (C, ревью r1-r3)
   const TZ_FALLBACK = 10800;           // Europe/Moscow fixed (wmeta.tz_policy)
   const POLL_BACKOFF_MAX_MS = 300000;  // §6: backoff до 5 мин
@@ -265,8 +267,10 @@ window.WEATHER = (function () {
 
   /* --- шапка для экранов U2+ (§4.0 — на всех экранах): свежесть + батарея.
          page-now.js заполняет её из своих данных; здесь — самостоятельные
-         запросы /api/now + /api/events (24 ч, только types=BATTERY_LOW —
-         m-8: остальные события шапке не нужны; логика 🔴 — как в page-now).
+         запросы /api/now + /api/events (окно 1 ч, §5.5; v0.3.0: было 24 ч —
+         открытое BATTERY_LOW видимо в 1-часовом окне благодаря overlap; типы
+         — только BATTERY_LOW, m-8: остальные события шапке не нужны; логика
+         🔴 — как в page-now).
          Ошибки глотаются: баннер уже показан apiFetch, экран
          продолжает рисовать графики (§8 graceful degradation). --- */
   async function refreshHeader() {
@@ -280,7 +284,7 @@ window.WEATHER = (function () {
       const ok = batteryOk((d.current || {}).battery_raw);
       let evs = [];
       try {
-        const ev = await apiFetch("/api/events?from=" + (nowS - 86400) + "&to=" + nowS + "&types=BATTERY_LOW");
+        const ev = await apiFetch("/api/events?from=" + (nowS - 3600) + "&to=" + nowS + "&types=BATTERY_LOW");
         evs = ev.rows || [];
       } catch (e) { evs = []; }
       const lowOpen = evs.some(
