@@ -11,6 +11,15 @@ POST -> 405 + Connection: close + закрытие (r6-4); окна
 rate-limit 429 + Retry-After; graceful SIGTERM;
 U4 (§5.5, v0.3.0): overlap-семантика окна T1a-T1f (вкл. приоритет скобок —
 T1e), /events 200 без Chart.js, no-inline, старт без page-events.js -> exit 1.
+U5 (§5.6, v0.4.0): /api/forecast — auth 401; пустая таблица -> 200
+available:false (не 503); конверт по разведке (calc_ts/age_s/stale,
+zambretti text+conf+targets 6/12ч, sager, persistence ×3 с horizon_h);
+stale после UPDATE issued_at назад; /forecast 200 + page-forecast.js
+без Chart.js, no-inline; старт без page-forecast.js -> exit 1.
+DOM-ID forecast-страницы (в перечень; HTML не грепается — на ревью целиком):
+fc-init, fc-init-body, fc-data, fc-fresh, fc-zam, fc-table, fc-sager,
+refresh, last-update (+ общие шапки fresh-dot/fresh-text/batt-dot/batt-text/
+ui-version/theme-toggle/banner).
 
 Запуск: python scripts/weather_ui_smoke.py"""
 import base64
@@ -117,6 +126,17 @@ def prepare():
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(h0 - k * 3600, 10.0 + k, 8.0, 12.0 + k, 775.0, 2.0, 4.0, 6.0, "С",
           0.5 * k, 100.0, 1.0, 55) for k in range(5)])
+    # U5-T1 (§5.6, v0.4.0): прогноз детерминирован — таблица forecast пуста
+    # (в копии живой БД строки этапа B есть); фиксстуры вставит main()
+    # между available:false и available:true
+    con.execute("DELETE FROM forecast")
+    # миграция v3 этапа B (forecast.text) в копии БД weather-8 может
+    # отсутствовать (агрегатор применяет её на своём старте) — идемпотентно;
+    # запись в schema_migrations НЕ добавляем — чек meta migrations
+    # ожидает последнюю версию копии (2)
+    cols = [r[1] for r in con.execute("PRAGMA table_info(forecast)")]
+    if "text" not in cols:
+        con.execute("ALTER TABLE forecast ADD COLUMN text TEXT")
     d0 = ((now + 10800) // 86400) * 86400 - 10800        # полночь MSK (этап B)
     con.executemany(
         "INSERT INTO v_daily (day_epoch,t_out_min,t_out_max,t_out_avg,t_out_min_time,"
@@ -386,8 +406,72 @@ def main():
         check("daily fields count", len(j["fields"]) == 22)
         check("daily rows", len(j["rows"]) == 3 and len(j["rows"][0]) == 22)
         check("daily no truncated key", "truncated" not in j)
-        st, _, _ = req("/api/forecast", auth="valid")
-        check("forecast 404 (U5)", st == 404)
+        st, _, _ = req("/api/forecast")
+        check("U5-T1: forecast без auth 401 (§3)", st == 401)
+        st, _, body = req("/api/forecast", auth="valid")
+        j = json.loads(body)
+        check("U5-T1a: пустая таблица -> 200 available:false (не 503, §5.6)",
+              st == 200 and j.get("available") is False)
+        check("U5-T1a: reason строкой", isinstance(j.get("reason"), str))
+        # фиксстуры: один прогон этапа B (issued_at = now-2 c — свежий,
+        # age_s<=5, не stale): persistence ×3 (+1/+3/+6 ч) + zambretti ×2
+        # (+6/+12 ч) + sager ×1 (+6 ч)
+        issued = now - 2
+        con = sqlite3.connect(db)
+        con.executemany(
+            "INSERT INTO forecast (issued_at, target_ts, source, t_out_c, "
+            "p_rel_mmhg, rh_out_pct, wind_ms, confidence, text) "
+            "VALUES (?,?,?,?,?,?,?,?,?)", [
+                (issued, issued + 3600, "persistence", 12.8, 775.8, 78.0, 1.1,
+                 0.5, None),
+                (issued, issued + 10800, "persistence", 12.8, 775.8, 78.0, 1.1,
+                 0.5, None),
+                (issued, issued + 21600, "persistence", 12.8, 775.8, 78.0, 1.1,
+                 0.5, None),
+                (issued, issued + 21600, "zambretti", None, None, None, None,
+                 0.5, "Fairly fine, improving — Довольно ясно, улучшение"),
+                (issued, issued + 43200, "zambretti", None, None, None, None,
+                 0.5, "Fairly fine, improving — Довольно ясно, улучшение"),
+                (issued, issued + 21600, "sager_day", None, None, None, None,
+                 0.4, "Малооблачно, преимущественно сухо"),
+            ])
+        con.commit()
+        con.close()
+        st, _, body = req("/api/forecast", auth="valid")
+        j = json.loads(body)
+        check("U5-T1b: 200 available:true",
+              st == 200 and j.get("available") is True)
+        check("U5-T1b: calc_ts=issued, age_s<=5, stale:false",
+              j.get("calc_ts") == issued and 0 <= j.get("age_s", 10**9) <= 5
+              and j.get("stale") is False)
+        pers = j.get("persistence") or []
+        check("U5-T1b: persistence ×3, горизонты 1/3/6 ч",
+              len(pers) == 3 and [r.get("horizon_h") for r in pers] == [1, 3, 6])
+        check("U5-T1b: persistence поля (t/p/rh/wind/conf)",
+              bool(pers) and pers[0].get("t_out_c") == 12.8 and
+              pers[0].get("p_rel_mmhg") == 775.8 and
+              pers[0].get("rh_out_pct") == 78.0 and
+              pers[0].get("wind_ms") == 1.1 and
+              pers[0].get("confidence") == 0.5)
+        z = j.get("zambretti") or {}
+        check("U5-T1c: zambretti text+conf+targets 6/12 ч",
+              z.get("text") == "Fairly fine, improving — Довольно ясно, улучшение"
+              and z.get("confidence") == 0.5 and
+              [t.get("horizon_h") for t in z.get("targets") or []] == [6, 12])
+        s = j.get("sager") or {}
+        check("U5-T1c: sager text+conf (0.4)",
+              s.get("text") == "Малооблачно, преимущественно сухо" and
+              s.get("confidence") == 0.4)
+        # U5-S2: прогон старше 2 ч -> stale:true + возраст
+        con = sqlite3.connect(db)
+        con.execute("UPDATE forecast SET issued_at=? WHERE issued_at=?",
+                    (now - 10800, issued))
+        con.commit()
+        con.close()
+        st, _, body = req("/api/forecast", auth="valid")
+        j = json.loads(body)
+        check("U5-T1d: прогон 3 ч назад -> stale:true, age_s>=7200",
+              st == 200 and j.get("stale") is True and j.get("age_s") >= 7200)
         st, _, _ = req("/api/export.csv?from=1&to=2", auth="valid")
         check("export 404 (U6)", st == 404)
 
@@ -415,6 +499,15 @@ def main():
             b'<script src=', b'<script-'))          # только src, не inline
         st, _, _ = req("/static/page-events.js", auth="valid")
         check("page-events.js 200", st == 200)
+        # U5-C1 (§4.5): /forecast — настоящий экран, БЕЗ Chart.js
+        st, _, body = req("/forecast", auth="valid")
+        check("/forecast 200 + page-forecast.js", st == 200 and
+              b"page-forecast.js" in body)
+        check("forecast page без Chart.js (§4.5)", b"chart.min.js" not in body)
+        check("forecast no inline scripts", b"<script>" not in body.replace(
+            b'<script src=', b'<script-'))          # только src, не inline
+        st, _, _ = req("/static/page-forecast.js", auth="valid")
+        check("page-forecast.js 200", st == 200)
         st, _, _ = req("/settings", auth="valid")
         check("/settings 200", st == 200)
         st, _, _ = req("/", auth="wrong")
@@ -512,6 +605,27 @@ def main():
               log3.strip().splitlines()[-1] if log3.strip() else "")
         with open(pej, "wb") as f:
             f.write(pej_bytes)
+
+        # --- U5-S3 (M-4): старт без page-forecast.js -> required static, exit 1
+        # (по образцу U4-S4; самовосстановление: байты читаются ДО удаления)
+        pfj = os.path.join(BASE, "static", "page-forecast.js")
+        with open(pfj, "rb") as f:
+            pfj_bytes = f.read()
+        os.remove(pfj)
+        proc4 = subprocess.Popen(
+            [sys.executable, os.path.join(BASE, "server.py"),
+             "--db", db, "--port", "8202", "--bind", "127.0.0.1",
+             "--cred", cred, "--static", os.path.join(BASE, "static")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=BASE)
+        rc4 = proc4.wait(timeout=20)
+        log4 = proc4.stdout.read().decode("utf-8", "replace")
+        check("U5-S3: missing page-forecast.js -> exit 1", rc4 == 1, f"rc={rc4}")
+        check("U5-S3: startup error names page-forecast.js",
+              "required static file missing" in log4 and
+              "page-forecast.js" in log4,
+              log4.strip().splitlines()[-1] if log4.strip() else "")
+        with open(pfj, "wb") as f:
+            f.write(pfj_bytes)
 
         print(f"\n{'=' * 46}\nSMOKE: {PASSES} OK, {len(FAILS)} FAIL"
               + (f" -> {FAILS}" if FAILS else " — ALL PASSED"))
