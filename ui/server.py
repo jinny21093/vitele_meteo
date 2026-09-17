@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather-ui server.py v0.2.1 (U0-U3 + фиксы ревью GLM r1-r3) — дашборд
+"""weather-ui server.py v0.2.2 (U0-U3 + фиксы ревью GLM r1-r6) — дашборд
 погодной станции, stdlib-only.
 
 ТЗ: weather-ui-spec.md v1.2.2 + патч v1.2.3 (ревью GLM U0+U1). Задача: weather-ui-2
 (U2 «Сутки» + U3 «Месяц»). Впереди: U4 События (overlap-семантика окна §5.5),
 U5 Прогноз, U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+
+  v0.2.2 Ревью r4-r6 (см. отчёты r4-r6): do_POST — соединение закрывается
+        в любом исходе (close_connection первой строкой, r4-1/r5-1;
+        заголовок Connection: close — на финальном 405); r6-3 — лог
+        POST auth-отказов; смоук 93 проверки в deploy-tools/ (основа
+        verify_stage_ui.sh, U7).
 
   v0.2.1 Фиксы ревью r1-r3 (см. docs/reviews/weather-ui-fixtask-u2u3-glm.md):
         M-3 Cache-Control no-cache для html/js/css (отклонение от §5.0,
@@ -70,7 +76,7 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.2.2"
 
 # --- фиксированные списки (§0.7: имена/типы — только whitelist) ---
 # Типы событий: полный каталог патча v1.2.3 §5.5 (21 тип) — этап A (коллектор) +
