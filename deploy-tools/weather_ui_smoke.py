@@ -3,7 +3,8 @@
 """smoke-тест weather-ui server.py (U0-U3) на копии живой БД — ЛОКАЛЬНО, без VM.
 
 Проверки: health без auth; 401 + WWW-Authenticate (диалог); 405 POST; POST
-без auth с телом -> 401 + закрытие соединения (r4-1/r5-1); окна
+без auth с телом -> 401 + закрытие соединения (r4-1/r5-1); авторизованный
+POST -> 405 + Connection: close + закрытие (r6-4); окна
 7д/90д/90д/365д; whitelist fields/types/severity; конверты {from,to,rows[,...]};
 /api/now без id/schema_version (§5.1 v1.2.3); user= в authed-логе (§9 v1.2.3);
 битый context -> null; ETag/304/gzip; CSP/no-store/nosniff; обход пути;
@@ -191,6 +192,30 @@ def main():
                   f"stdout={p.stdout!r} stderr=...{p.stderr[-200:]}")
         except FileNotFoundError:
             check("POST no-auth with body -> 401 + conn closed (r4-1/r5-1)",
+                  False, "curl недоступен")
+
+        # --- авторизованный POST -> 405 + Connection: close + закрыто (r6-4) ---
+        # В пару к 401-проверке. У 405 заголовок Connection: close есть,
+        # поэтому дискриминатор тривиален: < Connection: close в verbose;
+        # num_connects 2-го трансфера — для симметрии с 401-проверкой.
+        try:
+            p = subprocess.run(
+                ["curl", "-v", "-s", "-o", "/dev/null",
+                 "-w", "%{http_code} %{num_connects}\n", "--max-time", "10",
+                 "-X", "POST", "--data", "a=1", "-u", f"{USER}:{PASS}",
+                 URL + "/api/now",
+                 "--next", "-s", "-o", "/dev/null",
+                 "-w", "%{http_code} %{num_connects}\n", "--max-time", "10",
+                 "-u", f"{USER}:{PASS}", URL + "/api/now"],
+                capture_output=True, text=True, timeout=30)
+            out = [ln.split() for ln in p.stdout.splitlines() if ln.strip()]
+            check("POST authed -> 405 + Connection: close + conn closed (r6-4)",
+                  len(out) == 2 and out[0] == ["405", "1"] and
+                  out[1] == ["200", "1"] and "< HTTP/1.1 405" in p.stderr and
+                  "< Connection: close" in p.stderr,
+                  f"stdout={p.stdout!r} stderr=...{p.stderr[-200:]}")
+        except FileNotFoundError:
+            check("POST authed -> 405 + Connection: close + conn closed (r6-4)",
                   False, "curl недоступен")
 
         # --- history (§5.2) ---
