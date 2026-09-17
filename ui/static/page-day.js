@@ -261,6 +261,10 @@
       tr.appendChild(td);
       tb.appendChild(tr);
       $("rain-total").textContent = "Осадки за 24 ч: —";
+      /* r4-4: пустые rows — гасим все графики, иначе после refresh с
+         данными остаётся стейл-рендер прошлой выборки */
+      destroy("t"); destroy("p"); destroy("wind"); destroy("sun");
+      destroy("rain");
     } else {
       renderTable(rows, fi);                     // m-11: от Chart.js не зависит
       setRainTotal(rows, fi);                    // m-11: от Chart.js не зависит
