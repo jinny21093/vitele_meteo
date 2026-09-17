@@ -3,10 +3,17 @@
 **Объект:** визуальный дашборд поверх `weather.db`  
 **Хост:** Debian 12 VM (Hyper-V), x86\_64, 1 vCPU, ~2.6 ГБ RAM, ~7.4 ГБ свободно  
 **Сеть:** LAN-only, порт 8089 (биндинг на LAN-интерфейс)  
-**Версия документа:** 1.2.2  
+**Версия документа:** 1.2.4  
 **Связанные документы:** `weather-roadmap.md` (этапы A/B/C), `weatherstation.md`, `weatherboard_v2.1_analitic.md`  
 **Условие внедрения:** после успешного этапа B (есть `agg_hourly`, `agg_daily`, `forecast`, стабильный `current`)  
 **История:** изменения v1.0→v1.1, v1.1→v1.2, v1.2→v1.2.1 — в архивных версиях документа.
+
+## Changelog v1.2.2 → v1.2.4
+
+| # | Изменение |
+| --- | --- |
+| 1 | 1.2.4 — синхронизация с реализацией U0–U3 (ревью GLM r1–r3): реальные имена агрегатов, battery-whitelist, cache-политика, влит патч v1.2.3 |
+| 2 | §3: POST → 405 c `Connection: close` (следствие r4-1: тело POST не читается — соединение закрывается) |
 
 ## Changelog v1.2.1 → v1.2.2
 
@@ -86,6 +93,14 @@ TimeoutStopSec\=30
     
 -   Watchdog не ставим; heartbeat — Uptime Kuma на `/api/health`.
     
+-   Зависимости юнита U7 (патч v1.2.3): ZeroTier поднимается до UI —
+    
+ini
+
+[Unit]
+After=network-online.target zerotier-one.service
+Wants=network-online.target zerotier-one.service
+
 
 ### 2.3. Сеть
 
@@ -106,7 +121,7 @@ HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Basic realm="Weather", charset="UTF-8"
 Content-Type: text/plain; charset=utf-8
 
--   `do_POST` → 405 (исключений нет, UI полностью read-only).
+-   `do_POST` → 405 c `Connection: close` (исключений нет, UI полностью read-only; тело POST не читается — соединение закрывается).
     
 -   Rate-limit: 10 неудачных/мин/IP, словарь под `threading.Lock()`, затем 429 + `Retry-After: 60`. **При успешной авторизации счётчик неудач для IP сбрасывается.**
     
@@ -123,7 +138,7 @@ Content-Type: text/plain; charset=utf-8
 
 -   **Статус:** 🟢 < 2 мин, 🟡 2–10 мин, 🔴 > 10 мин + «обновлено N назад»;
     
--   **Батарея:** 🟢 `battery_raw` матчит ok-паттерн; 🟡 нераспознан (fail-safe); 🔴 активное `BATTERY_LOW`;
+-   **Батарея:** 🟢 `battery_raw` ТОЧНО равен одной из whitelist-строк коллектора (`stage-a/weather_collector.py` `BATTERY_OK_PATTERNS`); 🟡 — нераспознан (fail-safe); 🔴 — активное `BATTERY_LOW`;
     
 -   **Версия UI:** `UI_VERSION` — **semver кода, не версия документа** (major — ломает API-контракт, minor — новая фича/экран, patch — фикс). Константа в `app.js`.
     
@@ -160,7 +175,7 @@ Zambretti крупно + иконка; persistence-таблица (1/3/6/12/24 �
     
 -   SQL: значения — placeholders; `fields=`/`types=`/`severity=` — CSV, проверка по whitelist. Неизвестное → 400.
     
--   Заголовки: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` — всегда; CSP — на HTML. `Cache-Control`: `/static/*` → `public, max-age=86400` \+ ETag (sha256 на старте, `If-None-Match` → 304, `Vary: Accept-Encoding`); `/api/*` → `no-store`; HTML → `no-cache` (revalidation, не запрет кэша — намеренно).
+-   Заголовки: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` — всегда; CSP — на HTML. Кэш статики: ETag (sha256) \+ 304 \+ `Vary: Accept-Encoding`; `Cache-Control`: HTML, JS, CSS → `no-cache` (ревалидация на каждом запросе — релизы без версионирования URL); `.svg`/`.png`/`.ico`/`.woff2` → `public, max-age=86400`; `/api/*` → `no-store`.
     
 -   Gzip статики: пре-компрессия на старте (RAM-кэш), отдача при `Accept-Encoding: gzip`.
     
@@ -199,8 +214,21 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
 
 ### 5.1. GET /api/now
 
-`current.payload` + `status` (`collector_ok`, `last_poll_ts`, `gap_s`). Схема — как в v1.0. p95 < 50 мс.  
-**Пустой `current`** (первый запуск): 503 + `{"error": "current is empty, collector has not written yet"}`. UI — плашка «Инициализация…», повтор через 10 с.
+Ответ (контракт v1.2.3; таблицы `current` в схеме v2 нет):
+
+json
+
+{  "now": <epoch>,  "current": { "<колонки weather>: значения" },  "status": {"collector\_ok": <bool>, "last\_poll\_ts": <int>, "gap\_s": <int>},  "p\_tendency\_3h": <float|null>}
+
+-   `current` — последняя строка `weather` **плоским словарём** (raw + L1 + L2-short). Вложенная группировка Indoor/Outdoor/… из ранних версий — отменена. Сервер отдаёт все колонки, **кроме** `id` и `schema_version` (явный список, не `SELECT *`).
+    
+-   `p_tendency_3h` — для карточки давления (§4.1): avg(последние 10 мин) − avg(10 мин 3 ч назад), окна по времени, не LAG-строки.
+    
+-   `collector_ok`: `gap_s < 180` (3 цикла коллектора).
+    
+-   Пустая БД → 503 + `{"error": "current is empty, collector has not written yet"}`. UI — плашка «Инициализация…», повтор через 10 с.
+    
+-   p95 < 50 мс.
 
 ### 5.2. GET /api/history?from=&to=&fields=
 
@@ -215,17 +243,29 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
 
 ### 5.3. GET /api/hourly?from=&to=
 
-Окно ≤ 90 дней (≤ 2160 строк), из `agg_hourly`. Поля: `hour_epoch, t_out_avg, t_out_min, t_out_max, p_rel_avg, wind_avg, wind_max, gust_max, wind_dir_mode, rain_mm, solar_avg, uvi_max, n_samples`. Ответ: `{from, to, rows}`. p95 < 500 мс.
+Окно ≤ 90 дней (≤ 2160 строк), из `v_hourly` (реальные имена этапа B, решение A-2). Поля: `hour_epoch, t_out_avg, t_out_min, t_out_max, p_rel_avg, wind_avg, wind_max, gust_max, wind_dir_mode, rain_mm, solar_avg, uvi_max, n_samples`. Конверт ответа: `{from, to, fields, rows}` — `fields`: список колонок, порядок `rows` соответствует порядку `fields` (решение B-1). p95 < 500 мс.
 
 ### 5.4. GET /api/daily?from=&to=
 
-Окно ≤ 365 дней, из `agg_daily`. Поля: `day_epoch, t_out_min, t_out_max, t_out_avg, t_out_min_time, t_out_max_time, p_min, p_max, wind_avg, wind_max, gust_max, wind_run_km, wind_dir_mode, rain_mm, rain_hours, solar_sum_wh_m2, uvi_max, gdd_day, frost_flag, hard_freeze_flag, fog_flag, n_samples`.
+Окно ≤ 365 дней, из `v_daily`. Поля: `day_epoch, t_out_min, t_out_max, t_out_avg, t_out_min_time, t_out_max_time, p_min, p_max, wind_avg, wind_max, gust_max, wind_run_km, wind_dir_mode, rain_mm, rain_hours, solar_sum_wh_m2, uvi_max, gdd_day, frost_flag, hard_freeze_flag, fog_flag, n_samples`.
 
-**Ответ:** `{from, to, rows}` — единый конверт с `/api/hourly`; без `truncated` (≤ 365 строк не упирается в лимит).
+**Ответ:** единый с `/api/hourly` — `{from, to, fields, rows}`; без `truncated` (≤ 365 строк не упирается в лимит).
 
 ### 5.5. GET /api/events?from=&to=&types=&severity=
 
 Окно ≤ 90 дней; `types`/`severity` — CSV → placeholders. **LIMIT 5000**, при обрезании — `"truncated": true` \+ баннер в UI.
+
+**Семантика окна — перекрытие (патч v1.2.3):** попадает событие, начавшееся внутри окна, ЛИБО начавшееся раньше и открытое/закрывшееся после `from`:
+
+sql
+
+WHERE (ts\_start >= ? AND ts\_start <= ?)   OR (ts\_start <  ? AND (ts\_end IS NULL OR ts\_end >= ?))
+
+Клиент показывает `ts_start < from` как «идёт с более раннего времени». Параметр `include_open` отменён.
+
+**Каталог типов (21, патч v1.2.3):** FROST, HARD\_FREEZE, FOG, STORM\_APPROACH, THUNDER\_RISK, HEAVY\_RAIN, DOWNPOUR, STRONG\_WIND, HURRICANE\_GUST, HEATWAVE, DRY\_SPELL, CALM, RAPID\_TEMP\_DROP, RAPID\_TEMP\_RISE, PRESSURE\_CRASH, RAIN\_COUNTER\_RESET, SENSOR\_MISSING, SENSOR\_STUCK, SENSOR\_DRIFT, SENSOR\_ANOMALY, BATTERY\_LOW. Фильтр по типу вне каталога → 400.
+
+**Батарея (§4.0/§4.1, патч v1.2.3):** статус BATTERY\_LOW определяется запросом `/api/events?from=<now-3600>&to=<now>` — любое открытое событие видно независимо от возраста.
 
 **Формат ответа — единый со всеми остальными эндпоинтами** (консистентность для клиентского кода):
 
@@ -332,7 +372,7 @@ function fmtDate(e)    { return fmtTs(e).slice(0,10); }
 
 ## 9\. Логирование
 
-stdout → journald. ISO8601 LEVEL msg key=value. INFO — запросы; WARN — > 1 с, 4xx, битый context; ERROR — 5xx, исключения. Не логируем: `Authorization`, пароли, содержимое БД (кроме фрагментов для диагностики битого context — до 100 символов).
+stdout → journald. ISO8601 LEVEL msg key=value. INFO — запросы; WARN — > 1 с, 4xx, битый context; ERROR — 5xx, исключения. INFO-строки authed-запросов содержат `user=weather`; 401/429 — только `ip=` (идентифицированного пользователя нет). Authorization-заголовок не логируется никогда. Не логируем: `Authorization`, пароли, содержимое БД (кроме фрагментов для диагностики битого context — до 100 символов).
 
 ## 10\. Не входит
 
@@ -382,7 +422,7 @@ curl -sf -u weather:"$UI\_PASS" "$B/api/daily?from\=$((NOW\-30\*86400))&to\=$NOW
     
 2.  Сверка юзера/путей (`auditbot` vs `vitele`) — до verify-скриптов.
     
-3.  Порт: `ss -tlnp` при установке; занят → 8090.
+3.  Порт: `ss -tlnp` при установке; занят → 8091 (8090 занят weather-api этапа B).
     
 
 ## 13\. Резюме
