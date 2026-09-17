@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
 <script src="/static/app.js" defer></script>
+<script src="/static/page-events.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -25,14 +26,31 @@
 
 <div id="banner" class="banner hidden" role="alert"></div>
 
-<main class="placeholder-wrap">
-  <section class="card placeholder">
-    <h2>События</h2>
-    <p>Экран появится в юните U4 (ТЗ weather-ui-spec.md §11).</p>
-    <p class="muted">Сейчас реализованы U0–U3: каркас (auth, health) и экраны «Сейчас», «Сутки», «Месяц».</p>
+<main class="charts-page">
+  <section class="chart-card">
+    <h2>Период и фильтры</h2>
+    <div class="controls" role="group" aria-label="Окно событий">
+      <span class="muted">Окно:</span>
+      <button class="seg" data-days="1" type="button">1 день</button>
+      <button class="seg" data-days="7" type="button">7 дней</button>
+      <button class="seg" data-days="30" type="button">30 дней</button>
+      <button class="seg" data-days="90" type="button">90 дней</button>
+    </div>
+    <div class="filters">
+      <div class="chip-row" id="type-chips" role="group" aria-label="Фильтр по типу"></div>
+      <div class="chip-row" id="sev-chips" role="group" aria-label="Фильтр по severity"></div>
+    </div>
+    <p class="muted">Пустой выбор — без фильтра. Клик по событию — карточка с context.</p>
+  </section>
+  <section class="chart-card">
+    <h2>Таймлайн</h2>
+    <div id="timeline"><span class="muted">загрузка&hellip;</span></div>
   </section>
 </main>
 
-<footer class="foot"><span id="last-update" class="muted"></span></footer>
+<footer class="foot">
+  <button id="refresh" class="btn" type="button">Обновить</button>
+  <span id="last-update" class="muted"></span>
+</footer>
 </body>
 </html>
