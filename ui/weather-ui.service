@@ -1,0 +1,30 @@
+; weather-ui.service — systemd-юнит UI-сервера (U7-1, спека weather-ui-spec.md
+; v1.2.7 §2.2). Ставится рядом с этапами A/B: cp ui/weather-ui.service
+; /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now
+; weather-ui. Заменяет setsid-nohup-запуск: переживает ребут VM (инцидент
+; 20.09 — UI мёртв 4.5 суток незаметно).
+;
+; ZeroTier — Wants, НЕ Requires: ZT не обязателен для LAN-бинда (UI обязан
+; подниматься и без него). Бинды — только из config.py (LAN + ZT + loopback
+; с v0.4.1); никаких --bind 0.0.0.0. TimeoutStopSec=30 — под graceful
+; shutdown server.py (SIGTERM -> shutdown() в отдельном потоке -> server_close,
+; daemon_threads=False — дожидаемся обработчиков, §2.2).
+
+[Unit]
+Description=Weather UI dashboard (:8089, basic auth, stdlib-only, weather-ui)
+After=network-online.target zerotier-one.service
+Wants=network-online.target zerotier-one.service
+
+[Service]
+Type=simple
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash/ui
+ExecStart=/usr/bin/python3 server.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
