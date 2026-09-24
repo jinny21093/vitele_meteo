@@ -12,6 +12,11 @@ weather-ui-4 (U5 «Прогноз»). Впереди: U6 Настройки+expo
         последний прогон (MAX(issued_at)); available:false (пустая таблица)
         — 200, не ошибка; stale (U5-S2) — возраст > 2 прогонов; required-
         статика + forecast.html/page-forecast.js (M-4); экран /forecast (§4.5).
+        Дельта ревью владельца до деплоя (версия остаётся 0.4.0):
+        issued_values — база Δ на issued_at («вариант (б)», не «сейчас»);
+        letter Замбретти в конверте (этап B пишет forecast.letter, U5-B1;
+        колонка селектится только если есть — легаси-БД без 503);
+        горизонт 24 ч — отклонён владельцем, не добавлен.
 
   v0.3.0 U4 События: /api/events — overlap-семантика окна (§5.5, канон
         v1.2.4): видно событие, начавшееся внутри окна, ЛИБО начавшееся
@@ -764,19 +769,32 @@ class UiHandler(BaseHTTPRequestHandler):
         return 200
 
     def _api_forecast(self):
-        """§5.6 (U5, v0.4.0): прогноз этапа B из таблицы forecast — формулы НЕ
-        дублируем (принцип U5, ревью v2.1 п.8): пишет weather_aggregator
-        (write_forecasts, hourly-прогон timer *:02:00, issued_at=int(now)
-        прогона, UNIQUE(issued_at,target_ts,source)); читаем последний прогон
-        целиком по MAX(issued_at) — без параметров (окно не нужно).
+        """§5.6 (U5, v0.4.0; дельты ревью владельца — issued_values + letter):
+        прогноз этапа B из таблицы forecast — формулы НЕ дублируем (принцип
+        U5, ревью v2.1 п.8): пишет weather_aggregator (write_forecasts,
+        hourly-прогон timer *:02:00, issued_at=int(now) прогона,
+        UNIQUE(issued_at,target_ts,source)); читаем последний прогон целиком
+        по MAX(issued_at) — без параметров (окно не нужно).
 
-        Конверт (точная форма по разведке U5-R1/R2, миграция v3 + text):
-        {available: true, calc_ts, age_s, stale, zambretti: {text, confidence,
-        targets: [{target_ts, horizon_h}] × 2 (+6ч/+12ч)}, sager: {target_ts,
-        text, confidence} | null (ночью строка не пишется — 10<=h<16),
+        Конверт (v1.2.6 §5.6):
+        {available: true, calc_ts, age_s, stale,
+        issued_values: {t_out_c, p_rel_mmhg} | null — БАЗА РАСЧЁТА (решение
+        владельца «вариант (б)»): показания на issued_at — последний замер
+        weather с ts <= issued_at (не «сейчас»!); null — истории до issued_at
+        нет; клиент считает Δ от них, при null — Δ «—»,
+        zambretti: {text, confidence, letter | null, targets: [{target_ts,
+        horizon_h}] × 2 (+6ч/+12ч)} — letter пишет этап B (миграция
+        forecast.letter, U5-B1); null — строки до миграции (легаси; клиент
+        обязан переживать),
+        sager: {target_ts, text, confidence} | null (ночью строка не пишется
+        — 10<=h<16),
         persistence: [{target_ts, horizon_h, t_out_c, p_rel_mmhg, rh_out_pct,
-        wind_ms, confidence}] × 3 (+1ч/+3ч/+6ч)}. Буква Замбретти в БД НЕ
-        пишется (только text "en — ru") — в конверте отсутствует (доложено).
+        wind_ms, confidence}] × 3 (+1ч/+3ч/+6ч)}. Горизонт 24 ч — отклонён
+        владельцем (не добавляем).
+
+        Совместимость: колонка letter появилась позже текста — селектим её
+        только если она уже есть в таблице (PRAGMA table_info); до прогона
+        этапа B с миграцией letter во всех строках null, конверт не меняется.
 
         U5-S2: этап B пересчитывает ежечасно -> stale = возраст >
         FORECAST_STALE_S (2 пропущенных прогона подряд).
@@ -790,16 +808,31 @@ class UiHandler(BaseHTTPRequestHandler):
                 self._json(200, {"available": False,
                                  "reason": "no forecast rows: aggregator has not run yet"})
                 return 200
+            # letter появилась позже text (U5-B1): селектим только если
+            # колонка уже есть — до прогона этапа B с миграцией конверт
+            # отдаётся с letter: null (поведение легаси, без 503)
+            cols = {r[1] for r in con.execute("PRAGMA table_info(forecast)")}
+            sel = ("target_ts, source, t_out_c, p_rel_mmhg, rh_out_pct, "
+                   "wind_ms, confidence, text")
+            if "letter" in cols:
+                sel += ", letter"
             rows = con.execute(
-                "SELECT target_ts, source, t_out_c, p_rel_mmhg, rh_out_pct, "
-                "wind_ms, confidence, text FROM forecast WHERE issued_at=? "
+                f"SELECT {sel} FROM forecast WHERE issued_at=? "
                 "ORDER BY target_ts, source", (calc_ts,)).fetchall()
+            # U5-U1 (вариант (б), решение владельца): базовые значения на
+            # issued_at — последний замер ДО расчёта, не «сейчас»
+            iv = con.execute(
+                "SELECT outdoor_temp_c, pressure_rel_mmhg FROM weather "
+                "WHERE ts<=? ORDER BY ts DESC LIMIT 1", (calc_ts,)).fetchone()
         finally:
             con.close()
+        issued_values = ({"t_out_c": iv[0], "p_rel_mmhg": iv[1]} if iv else None)
         age_s = max(0, int(time.time()) - calc_ts)
         persistence, zam_targets = [], []
-        zam_text, zam_conf, sager = None, None, None
-        for tts, src, t_out, p_rel, rh, wind, conf, text in rows:
+        zam_text, zam_conf, zam_letter, sager = None, None, None, None
+        for row in rows:
+            tts, src, t_out, p_rel, rh, wind, conf, text = row[:8]
+            letter = row[8] if len(row) > 8 else None
             hz = max(0, (tts - calc_ts) // 3600)
             if src == "persistence":
                 persistence.append({"target_ts": tts, "horizon_h": hz,
@@ -808,15 +841,16 @@ class UiHandler(BaseHTTPRequestHandler):
                                     "confidence": conf})
             elif src == "zambretti":
                 if zam_text is None:
-                    zam_text, zam_conf = text, conf
+                    zam_text, zam_conf, zam_letter = text, conf, letter
                 zam_targets.append({"target_ts": tts, "horizon_h": hz})
             elif src == "sager_day" and sager is None:
                 sager = {"target_ts": tts, "text": text, "confidence": conf}
         zambretti = (None if zam_text is None else
                      {"text": zam_text, "confidence": zam_conf,
-                      "targets": zam_targets})
+                      "letter": zam_letter, "targets": zam_targets})
         self._json(200, {"available": True, "calc_ts": calc_ts,
                          "age_s": age_s, "stale": age_s > FORECAST_STALE_S,
+                         "issued_values": issued_values,
                          "zambretti": zambretti, "sager": sager,
                          "persistence": persistence})
         return 200
