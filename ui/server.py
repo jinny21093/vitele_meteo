@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather-ui server.py v0.4.0 (U0-U5 + фиксы ревью GLM r1-r6) — дашборд
+"""weather-ui server.py v0.4.1 (U0-U5 + фиксы ревью GLM r1-r6) — дашборд
 погодной станции, stdlib-only.
 
-ТЗ: weather-ui-spec.md v1.2.5 (§5.6 уточняется фактом U5 — v1.2.6). Задача:
-weather-ui-4 (U5 «Прогноз»). Впереди: U6 Настройки+export.csv, U7 systemd+Kuma+verify.
+ТЗ: weather-ui-spec.md v1.2.7 (§2.2/§2.3/§3 — синхронизация U7). Задачи:
+weather-ui-4 (U5 «Прогноз») закрыт; U6 Настройки+export.csv — впереди;
+U7 systemd+Kuma+verify — юнит/loopback/verify (см. deploy-tools/verify_stage_ui.sh).
 
+  v0.4.1 U7-2: loopback 127.0.0.1 в BIND_HOSTS (config.py) — Uptime Kuma на
+        той же VM целится в http://127.0.0.1:8089/api/health и не зависит
+        от LAN/ZT-интерфейса (спека v1.2.7 §2.3). Бамп SERVER_VERSION —
+        изменение ДЕПЛОИРОВАННОГО кода (config.py); UI_VERSION/app.js
+        не меняются. systemd-юнит — ui/weather-ui.service (U7-1, §2.2):
+        он теперь штатный способ рестарта (setsid-nohup отменён).
   v0.4.0 U5 Прогноз: /api/forecast — конверт из таблицы forecast этапа B
         (§5.6): формулы (Zambretti/Sager/persistence) НЕ дублируем — пишет
         weather_aggregator в hourly-прогоне (systemd timer *:02:00), читаем
@@ -94,7 +101,7 @@ from urllib.parse import parse_qs, urlparse
 
 import config
 
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.4.1"
 
 # --- фиксированные списки (§0.7: имена/типы — только whitelist) ---
 # Типы событий: полный каталог патча v1.2.3 §5.5 (21 тип) — этап A (коллектор) +
