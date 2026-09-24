@@ -3,7 +3,7 @@
 **Объект:** визуальный дашборд поверх `weather.db`  
 **Хост:** Debian 12 VM (Hyper-V), x86\_64, 1 vCPU, ~2.6 ГБ RAM, ~7.4 ГБ свободно  
 **Сеть:** LAN-only, порт 8089 (биндинг на LAN-интерфейс)  
-**Версия документа:** 1.2.6  
+**Версия документа:** 1.2.7  
 **Связанные документы:** `weather-roadmap.md` (этапы A/B/C), `weatherstation.md`, `weatherboard_v2.1_analitic.md`  
 **Условие внедрения:** после успешного этапа B (есть `v_hourly`, `v_daily`, `forecast`, стабильный `current` — последняя строка `weather`, патч v1.2.3 §5.1)  
 **История:** изменения v1.0→v1.1, v1.1→v1.2, v1.2→v1.2.1 — в архивных версиях документа.
@@ -14,8 +14,16 @@
 | --- | --- |
 | 1 | §5.6: `/api/forecast` — фактический конверт реализации U5 (v0.4.0): `{available, calc_ts, age_s, stale, zambretti, sager, persistence}`; источник — последний прогон таблицы `forecast` этапа B (формулы в UI-сервере не дублируются); `available: false` — 200, не 503; `stale` — возраст > 2 ч (каденция этапа B 1 ч) |
 | 2 | §4.5: синхронизация с фактом этапа B — горизонты persistence 1/3/6 ч (12 ч — только Замбретти, 24 ч не пишется); иконок в `/static/icons/` нет — Замбретти текстом; свежесть «рассчитан HH:MM» + возраст, устаревший расчёт — жёлтым (U5-C3) |
-| 3 | (дельта ревью владельца, до деплоя) §5.6/§4.5: Δ-семантика «от базы расчёта» — конверт дополнен `issued_values: {t_out_c, p_rel_mmhg} | null` (показания на `issued_at`, НЕ «сейчас»; null — истории до `issued_at` нет); `zambretti.letter` в конверте (пишет этап B в колонку `forecast.letter`; null — легаси-строки до миграции); клиент: ΔT/ΔP — от `issued_values`, база недоступна → «—»; буква Замбретти крупно рядом с ru-текстом; горизонт 24 ч — отклонён владельцем (остаются persistence 1/3/6 + Замбретти +6/+12) |
 | 3 | (дельта ревью владельца, до деплоя) §5.6/§4.5: Δ-семантика «от базы расчёта» — конверт дополнен `issued_values: {t_out_c, p_rel_mmhg} \| null` (показания на `issued_at`, НЕ «сейчас»; null — истории до `issued_at` нет); `zambretti.letter` в конверте (пишет этап B в колонку `forecast.letter`; null — легаси-строки до миграции); клиент: ΔT/ΔP — от `issued_values`, база недоступна → «—»; буква Замбретти крупно рядом с ru-текстом; горизонт 24 ч — отклонён владельцем (остаются persistence 1/3/6 + Замбретти +6/+12) |
+
+## Changelog v1.2.6 → v1.2.7
+
+| # | Изменение |
+| --- | --- |
+| 1 | §2.2: юнит синхронизирован с реализацией U7-1 — файл `ui/weather-ui.service` в репо: Restart=on-failure, RestartSec=5, WorkingDirectory + ExecStart относительным, StandardOutput/StandardError=journal; ZeroTier — Wants, не Requires |
+| 2 | §2.3: loopback `127.0.0.1` в `BIND_HOSTS` (U7-2, SERVER_VERSION 0.4.1) — Uptime Kuma на той же VM целится в `http://127.0.0.1:8089/api/health`, мониторинг не зависит от LAN/ZT-интерфейса |
+| 3 | §3: не-GET/POST методы не поддерживаются — 501 базового `BaseHTTPRequestHandler`; Kuma-монитор — только GET `/api/health` (U7-6) |
+
 
 ## Changelog v1.2.4 → v1.2.5
 
@@ -98,10 +106,13 @@ ini
 \[Service\]
 Type\=simple
 User\=auditbot
-ExecStart\=/usr/bin/python3 /home/auditbot/weather-dash/ui/server.py
-Restart\=always
-RestartSec\=10
+WorkingDirectory\=/home/auditbot/weather-dash/ui
+ExecStart\=/usr/bin/python3 server.py
+Restart\=on-failure
+RestartSec\=5
 TimeoutStopSec\=30
+StandardOutput\=journal
+StandardError\=journal
 
 -   SIGTERM/SIGINT → `threading.Thread(target=server.shutdown, daemon=True).start()` (из потока `serve_forever()` — deadlock).
     
@@ -117,10 +128,13 @@ ini
 After=network-online.target zerotier-one.service
 Wants=network-online.target zerotier-one.service
 
+-   Юнит-файл — в репо: `ui/weather-ui.service` (U7-1, v1.2.7). Установка: cp в `/etc/systemd/system/` → `daemon-reload` → `enable --now`. `Restart=on-failure` — автоперезапуск только при падении (ручной `systemctl stop` юнит не перезапускает); логи — в journald (`journalctl -u weather-ui`).
+
+
 
 ### 2.3. Сеть
 
-Биндинг на LAN-IP из `config.py`, не `0.0.0.0`. Проверка: `ss -tlnp | grep 8089`. Наружу — только через ZeroTier. Reverse proxy — нет, auth в handler'е.
+Биндинг на LAN-IP из `config.py`, не `0.0.0.0`. Проверка: `ss -tlnp | grep 8089`. Наружу — только через ZeroTier. Reverse proxy — нет, auth в handler'е. С v0.4.1 в `BIND_HOSTS` добавлен loopback `127.0.0.1` (v1.2.7, U7-2): Uptime Kuma на той же VM целится в `http://127.0.0.1:8089/api/health` — мониторинг не зависит от LAN-интерфейса и ZeroTier.
 
 ## 3\. Авторизация
 
@@ -138,6 +152,7 @@ WWW-Authenticate: Basic realm="Weather", charset="UTF-8"
 Content-Type: text/plain; charset=utf-8
 
 -   `do_POST` → 405 c `Connection: close` (исключений нет, UI полностью read-only; тело POST не читается — соединение закрывается). Закрытие — флагом сокета; заголовок `Connection: close` несёт только финальный 405.
+-   **Не-GET/POST методы не поддерживаются** — 501 базового `BaseHTTPRequestHandler` (`do_HEAD` не переопределяется). Uptime Kuma настроен на GET `/api/health` — 501 от базового класса не влияет на мониторинг (v1.2.7, решение согласовано — U7-6).
     
 -   Rate-limit: 10 неудачных/мин/IP, словарь под `threading.Lock()`, затем 429 + `Retry-After: 60`. **При успешной авторизации счётчик неудач для IP сбрасывается.**
     
