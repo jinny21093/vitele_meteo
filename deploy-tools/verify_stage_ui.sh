@@ -91,7 +91,8 @@ if [[ "$MODE" == "deploy" ]]; then
   BASE="${BASE:-http://127.0.0.1:8089}"
 elif [[ "$MODE" == "unit-test" ]]; then
   command -v systemctl >/dev/null 2>&1 && ok "systemctl в PATH" || bad "systemctl отсутствует"
-  systemctl list-unit-files 2>/dev/null | grep -q '^weather-ui\.service' \
+  # БЕЗ grep -q в пайпе: pipefail + ранний выход grep -> SIGPIPE у systemctl -> ложный FAIL
+  [[ -n "$(systemctl list-unit-files 2>/dev/null | grep '^weather-ui\.service')" ]] \
     && ok "юнит weather-ui.service установлен" || bad "юнит weather-ui.service не найден"
 fi
 if [[ "$MODE" != "deploy" ]]; then
@@ -345,13 +346,13 @@ if [[ "$MODE" != "deploy" ]]; then
     assert_jq "letter фикстуры доходит до конверта (B)" "$FC2" '.zambretti.letter == "B"'
     assert_jq "issued_values.t_out_c = 10.0 (база на issued_at, НЕ «сейчас»)" "$FC2" '.issued_values.t_out_c == 10.0'
     assert_jq "issued_values.p_rel_mmhg = 770.0" "$FC2" '.issued_values.p_rel_mmhg == 770.0'
-    # stale: возраст расчёта > 2 прогонов (2 ч). Сдвигаем ВСЕ прогоны копии:
-    # следующая по свежести строка (час назад) иначе держит MAX(issued_at)
-    # свежим и stale остаётся false
-    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at - 10800;"
+    # stale: возраст расчёта > 2 прогонов (2 ч). Сдвигаем ВСЕ прогоны копии
+    # на 30 суток (без UNIQUE-коллизий по issued_at: вся таблица уезжает в
+    # пустую область; 3-часовой сдвиг коллизировал с часовыми прогонами)
+    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at - 2592000;"
     FC3=$(curl -s --max-time 8 "${AUTH[@]}" "$B/api/forecast")
-    assert_jq "stale:true после сдвига issued_at на -3 ч (U5-S2)" "$FC3" '.stale == true'
-    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at + 10800;"
+    assert_jq "stale:true после сдвига issued_at на -30 сут (U5-S2: age > 2 ч)" "$FC3" '.stale == true'
+    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at + 2592000;"
   else
     skip "прогонов forecast/погоды в копии нет — letter/issued_values-фикстуры пропущены"
   fi
