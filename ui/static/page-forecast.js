@@ -5,16 +5,20 @@
    прогон таблицы forecast, который пишет weather_aggregator ежечасно
    (systemd timer *:02:00, issued_at=int(now) прогона).
    - polling 15 мин (§4.5) + ручной refresh; W.poll (backoff, m-6).
-   - Замбретти крупно: text этапа B = "en — ru" -> ru крупно, en мелко; буква
-     Замбретти в БД НЕ пишется (находка разведки U5-R2) — не показываем.
-     Иконки в /static/icons/ нет (только favicon.svg) — экран текстовый.
+   - Замбретти крупно: text этапа B = "en — ru" -> ru крупно, en мелко;
+     буква Замбретти — крупно рядом с ru (U5-C2; пишет этап B с миграцией
+     forecast.letter); letter null (легаси-строки до миграции) — буква не
+     показывается, только текст. Иконок в /static/icons/ нет — текстовый.
    - Persistence-таблица (.stat-table): горизонты 1/3/6 ч (12/24 ч этап B не
-     пишет — доклад U5-R2); ΔT/ΔP — относительно current из /api/now
-     (арифметика отображения, не формула прогноза); если /api/now упал —
-     показываем абсолюты без Δ (m-11).
+     пишет; 24 ч отклонено владельцем); ΔT/ΔP — от issued_values (U5-C1,
+     решение владельца «вариант (б)»: база расчёта — показания на issued_at,
+     НЕ «сейчас»; конверт /api/forecast); issued_values null — столбцы Δ «—»,
+     подпись «база недоступна». Запрос /api/now со страницы убран — Δ от
+     «сейчас» больше не считается вовсе (шапку обслуживает refreshHeader).
    - Sager: строка в БД есть только днём (формула этапа B write_forecasts:
      10 <= локальный час дачи < 16, TZ дачи = W.tzOffset) -> ночью плашка
-     «Не применимо (ночь)»; днём без строки — «ещё не рассчитан».
+     «Не применимо (ночь)»; днём без строки — «ещё не рассчитан»; горизонт
+     «+N ч» = (target_ts − calc_ts)/3600 — от базы расчёта (U5-C3, ревью).
    - U5-C2: available:false -> карточка «Прогноз ещё не сформирован (нужно
      ≥ 3 ч истории)» (паттерн initMode); ошибка API — та же карточка.
    - U5-C3: «рассчитан HH:MM (возраст)»; stale — жёлтым (fc-stale).
@@ -69,7 +73,9 @@
     }
   }
 
-  /* Замбретти: ru крупно, en мелко; horizons/confidence — подписью */
+  /* Замбретти: буква крупно рядом с ru (U5-C2; letter null — легаси-строка
+     до миграции forecast.letter — буквы нет), ru крупно, en мелко;
+     horizons/confidence — подписью */
   function renderZambretti(z) {
     const box = $("fc-zam");
     box.textContent = "";
@@ -80,7 +86,10 @@
     const parts = String(z.text).split(" — ");
     const ru = parts.length > 1 ? parts[parts.length - 1] : String(z.text);
     const en = parts.length > 1 ? parts.slice(0, -1).join(" — ") : "";
-    box.appendChild(el("div", "fc-zam-ru", ru));
+    const row = el("div", "fc-zam-row");
+    if (z.letter) row.appendChild(el("span", "fc-zam-letter", String(z.letter)));
+    row.appendChild(el("div", "fc-zam-ru", ru));
+    box.appendChild(row);
     if (en) box.appendChild(el("div", "fc-zam-en muted", en));
     const hs = (z.targets || []).map((t) => "+" + t.horizon_h + " ч").join(", ");
     box.appendChild(el("div", "muted",
@@ -88,8 +97,17 @@
       " · уверенность " + W.num(z.confidence, 2)));
   }
 
-  /* persistence-таблица: горизонты 1/3/6 ч; ΔT/ΔP относительно current */
-  function renderTable(d, cur) {
+  /* Δ: разница строкой; базы нет (null/undefined) — «—» (U5-C1);
+     NaN арифметики деградирует в signed() */
+  function delta(fc, base) {
+    if (base === null || base === undefined) return "—";
+    return signed(fc - base, 1);
+  }
+
+  /* persistence-таблица: горизонты 1/3/6 ч; ΔT/ΔP — от базы расчёта
+     issued_values (показания на issued_at, U5-C1 «вариант (б)»);
+     issued_values null — Δ «—» + подпись «база недоступна» */
+  function renderTable(d) {
     const wrap = $("fc-table");
     wrap.textContent = "";
     const rows = d.persistence || [];
@@ -97,6 +115,9 @@
       wrap.appendChild(el("span", "muted", "нет данных"));
       return;
     }
+    const iv = d.issued_values || null;
+    const haveBase = !!(iv && iv.t_out_c !== null && iv.t_out_c !== undefined &&
+                        iv.p_rel_mmhg !== null && iv.p_rel_mmhg !== undefined);
     const tb = el("table", "stat-table");
     const trh = el("tr");
     for (const h of ["Через", "ΔT, °C", "ΔP, мм", "T, °C", "P, мм", "Влажн, %"]) {
@@ -106,23 +127,23 @@
     for (const r of rows) {
       const tr = el("tr");
       tr.appendChild(el("td", "", "+" + r.horizon_h + " ч"));
-      tr.appendChild(el("td", "", cur ? signed(r.t_out_c - cur.outdoor_temp_c, 1) : "—"));
-      tr.appendChild(el("td", "", cur ? signed(r.p_rel_mmhg - cur.pressure_rel_mmhg, 1) : "—"));
+      tr.appendChild(el("td", "", delta(r.t_out_c, iv && iv.t_out_c)));
+      tr.appendChild(el("td", "", delta(r.p_rel_mmhg, iv && iv.p_rel_mmhg)));
       tr.appendChild(el("td", "", W.num(r.t_out_c, 1)));
       tr.appendChild(el("td", "", W.num(r.p_rel_mmhg, 1)));
       tr.appendChild(el("td", "", W.num(r.rh_out_pct, 0)));
       tb.appendChild(tr);
     }
     wrap.appendChild(tb);
-    wrap.appendChild(el("p", "muted", cur
-      ? "сейчас: " + W.num(cur.outdoor_temp_c, 1) + " °C, " +
-        W.num(cur.pressure_rel_mmhg, 1) + " мм рт. ст. — Δ = прогноз − сейчас"
-      : "Δ недоступна: текущие показания не получены (m-11)"));
+    wrap.appendChild(el("p", "muted", haveBase
+      ? "Δ = прогноз − расчёт (issued " + W.fmtTime(d.calc_ts) + ")"
+      : "Δ = прогноз − расчёт; база недоступна"));
   }
 
   /* Sager: ночью «Не применимо (ночь)» (логика этапа B 10<=h<16);
-     днём без строки в прогоне — «ещё не рассчитан» */
-  function renderSager(s, nowSec) {
+     днём без строки в прогоне — «ещё не рассчитан»; горизонт — от базы
+     расчёта calc_ts, не от «сейчас» (U5-C3: +N ч = (target_ts − calc_ts)/3600) */
+  function renderSager(s, nowSec, calcTs) {
     const box = $("fc-sager");
     box.textContent = "";
     const h = dachaHour(nowSec);
@@ -137,21 +158,18 @@
     }
     box.appendChild(el("div", "fc-zam-ru", s.text));
     box.appendChild(el("div", "muted",
-      "горизонт: +" + Math.max(0, Math.round(((s.target_ts || 0) - nowSec) / 3600)) +
+      "горизонт: +" + Math.max(0, Math.round(((s.target_ts || 0) - calcTs) / 3600)) +
       " ч · уверенность " + W.num(s.confidence, 2)));
   }
 
-  /* один цикл обновления (§4.5: polling 15 мин + ручной refresh) */
+  /* один цикл обновления (§4.5: polling 15 мин + ручной refresh).
+     /api/now со страницы убран (U5-C1): Δ считается от issued_values
+     конверта; шапку обслуживает refreshHeader со своим запросом */
   async function refresh() {
     const nowSec = Math.floor(Date.now() / 1000);
     let d = null;
     try { d = await W.apiFetch("/api/forecast"); }
     catch (e) { /* m-11: баннер уже показан apiFetch */ }
-    let cur = null;
-    try {
-      const n = await W.apiFetch("/api/now");
-      cur = n.current || null;
-    } catch (e) { cur = null; }      // Δ деградирует до «—», прогноз живёт
     try {
       if (!d) {
         showInit("Прогноз недоступен",
@@ -163,8 +181,8 @@
         showData();
         renderFresh(d, nowSec);
         renderZambretti(d.zambretti);
-        renderTable(d, cur);
-        renderSager(d.sager, nowSec);
+        renderTable(d);
+        renderSager(d.sager, nowSec, d.calc_ts);
       }
     } catch (e) { /* m-11: блок продолжает жить */ }
     await W.refreshHeader();         // §4.0: шапка на всех экранах
