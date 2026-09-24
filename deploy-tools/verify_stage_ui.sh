@@ -142,13 +142,27 @@ prepare_env() { # $1=uidir $2=db $3=port
 }
 
 start_server() { # $1=uidir $2=port $3=pidfile
-  ( cd "$1" && nohup python3 server.py > "$WORK/server_$2.log" 2>&1 & echo $! > "$WORK/$3" )
+  # пре-килл: слушатели порта от прошлых прогонов (сироты с удалённой БД
+  # отвечали 503 и отравляли прогон — урок v0.4.1-verify)
+  local orph
+  orph=$(ss -tlnp 2>/dev/null | grep ":$2 " | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u)
+  if [[ -n "$orph" ]]; then
+    kill $orph 2>/dev/null
+    sleep 0.6
+  fi
+  # exec-паттерн: субшелл заменяется python'ом -> $! = реальный PID
+  # (иначе pidfile ловил PID субшелла и cleanup-kill промахивался)
+  ( cd "$1" && exec nohup python3 server.py > "$WORK/server_$2.log" 2>&1 ) &
+  echo $! > "$WORK/$3"
   local i
   for i in $(seq 1 60); do
-    curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$2/api/health" 2>/dev/null && return 0
+    curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$2/api/health" 2>/dev/null && break
     sleep 0.25
   done
-  return 1
+  if grep -q 'ERROR bind failed' "$WORK/server_$2.log" 2>/dev/null; then
+    return 1   # порт занят/бинд не удался — не верить ответам чужого процесса
+  fi
+  curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$2/api/health" 2>/dev/null
 }
 
 FIXTURES=0
