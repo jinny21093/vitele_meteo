@@ -107,7 +107,7 @@ cleanup() {
   [[ -f "$WORK/server.pid" ]] && kill "$(cat "$WORK/server.pid")" 2>/dev/null
   [[ -f "$WORK/server2.pid" ]] && kill "$(cat "$WORK/server2.pid")" 2>/dev/null
   if [[ "$MODE" == "unit-test" && "$UNIT_WAS_ACTIVE" == "1" ]]; then
-    systemctl start weather-ui 2>/dev/null
+    sudo systemctl start weather-ui 2>/dev/null
     if systemctl is-active weather-ui >/dev/null 2>&1; then
       echo "[i] юнит weather-ui возвращён в active"
     else
@@ -209,7 +209,7 @@ if [[ "$MODE" == "unit-test" ]]; then
   echo "== G2. Остановка юнита (полный прогон на копии — без помех) =="
   if systemctl is-active --quiet weather-ui; then
     UNIT_WAS_ACTIVE=1
-    if systemctl stop weather-ui; then
+    if sudo systemctl stop weather-ui; then
       ok "юнит остановлен (systemctl stop weather-ui)"
     else
       bad "systemctl stop weather-ui"
@@ -382,7 +382,7 @@ fi
 # --- юнит обратно + вердикт ---
 if [[ "$MODE" == "unit-test" && "$UNIT_WAS_ACTIVE" == "1" ]]; then
   echo "== G13. Юнит обратно (упражнение restart-логики) =="
-  if systemctl start weather-ui; then
+  if sudo systemctl start weather-ui; then
     ok "systemctl start weather-ui"
   else
     bad "systemctl start weather-ui"
