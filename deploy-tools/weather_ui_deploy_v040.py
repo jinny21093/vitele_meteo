@@ -94,7 +94,9 @@ def main():
             if len(parts) == 2:
                 remote[parts[1]] = parts[0]
         for rel, h in MD5_EXPECT.items():
-            rp = remote_path(rel, root)
+            # в репо файлы лежат под ui/; в UIDIR скопированы без префикса
+            rp = (f"{root}/{rel}" if root == REPO
+                  else f"{root}/{rel[len('ui/'):]}")
             got = remote.get(rp)
             if got == h:
                 print(f"[+] md5 OK ({where}) {rp}")
@@ -158,12 +160,14 @@ def main():
 
     # ---------- шаг 2: лог старта ----------
     print("\n### 2. лог старта: version=0.4.0, files=15, dropped=0")
-    run(f"grep -E 'start version=' {LOG} | tail -1", must="version=0.4.0",
+    # grep -a: в логе встречается бинарный мусор от старых инцидентов —
+    # без -a grep отвечает «binary file matches» и строку не отдаёт
+    run(f"grep -a -E 'start version=' {LOG} | tail -1", must="version=0.4.0",
         fail="в последней start-строке нет version=0.4.0")
-    run(f"grep 'static loaded' {LOG} | tail -1", must="files=15",
+    run(f"grep -a 'static loaded' {LOG} | tail -1", must="files=15",
         fail="в static loaded нет files=15")
-    run(f"echo dropped_count=$(grep -c 'fields dropped' {LOG}); "
-        f"echo warn_count=$(grep -c ' WARN ' {LOG})",
+    run(f"echo dropped_count=$(grep -a -c 'fields dropped' {LOG}); "
+        f"echo warn_count=$(grep -a -c ' WARN ' {LOG})",
         must="dropped_count=0", fail="WARN 'fields dropped' присутствует!")
 
     # ---------- шаг 3: health ----------
@@ -211,8 +215,10 @@ def main():
         f"echo \"$BAD\" | grep '^BAD_' || echo ALL_PAGES_200",
         must="ALL_PAGES_200", fail="не все страницы отдают 200")
     run(f"CRED=$(cat {CRED}) && curl -s --max-time 5 -u \"$CRED\" "
-        f"{URL_LOCAL}/static/page-forecast.js | grep -c 'issued_values'",
-        must="1", fail="в отданном page-forecast.js нет issued_values")
+        f"{URL_LOCAL}/static/page-forecast.js | "
+        f"grep -q 'issued_values' && echo HAVE_ISSUED_VALUES",
+        must="HAVE_ISSUED_VALUES",
+        fail="в отданном page-forecast.js нет issued_values")
     run(f"CRED=$(cat {CRED}) && curl -s --max-time 5 -u \"$CRED\" "
         f"{URL_LOCAL}/static/forecast.html | grep -c 'page-forecast.js'",
         must="1", fail="в отданном forecast.html нет ссылки на page-forecast.js")
