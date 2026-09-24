@@ -345,11 +345,13 @@ if [[ "$MODE" != "deploy" ]]; then
     assert_jq "letter фикстуры доходит до конверта (B)" "$FC2" '.zambretti.letter == "B"'
     assert_jq "issued_values.t_out_c = 10.0 (база на issued_at, НЕ «сейчас»)" "$FC2" '.issued_values.t_out_c == 10.0'
     assert_jq "issued_values.p_rel_mmhg = 770.0" "$FC2" '.issued_values.p_rel_mmhg == 770.0'
-    # stale: возраст расчёта > 2 прогонов (2 ч)
-    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at - 10800 WHERE issued_at=$NEW_ISSUED;"
+    # stale: возраст расчёта > 2 прогонов (2 ч). Сдвигаем ВСЕ прогоны копии:
+    # следующая по свежести строка (час назад) иначе держит MAX(issued_at)
+    # свежим и stale остаётся false
+    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at - 10800;"
     FC3=$(curl -s --max-time 8 "${AUTH[@]}" "$B/api/forecast")
     assert_jq "stale:true после сдвига issued_at на -3 ч (U5-S2)" "$FC3" '.stale == true'
-    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at + 10800 WHERE issued_at=$NEW_ISSUED;"
+    sqlite3 "$WORK/test.db" "UPDATE forecast SET issued_at = issued_at + 10800;"
   else
     skip "прогонов forecast/погоды в копии нет — letter/issued_values-фикстуры пропущены"
   fi
