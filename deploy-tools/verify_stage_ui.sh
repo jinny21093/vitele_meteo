@@ -216,7 +216,7 @@ cget -u wrong:wrong "$B/api/now"
 assert_eq "/api/now неверный пароль -> 401" "$RC" "401"
 cget "${AUTH[@]}" "$B/api/now"
 assert_eq "/api/now с auth -> 200" "$RC" "200"
-assert_jq "/api/now: .ts != null" "$(cat "$TMPJSON")" '.ts != null'
+assert_jq "/api/now: .current.ts != null (§5.1: payload в .current)" "$(cat "$TMPJSON")" '.current.ts != null'
 
 echo "== G4. Страницы и версия =="
 for p in / /day /month /events /forecast /settings; do
@@ -286,7 +286,7 @@ assert_eq "/api/forecast -> 200" "$RC" "200"
 FC="$(cat "$TMPJSON")"
 assert_jq "/api/forecast: available:true" "$FC" '.available == true'
 assert_jq "/api/forecast: ключ issued_values (v0.4.0)" "$FC" 'has("issued_values")'
-assert_jq "/api/forecast: zambretti.letter ключ" "$FC" 'has("letter")'
+assert_jq "/api/forecast: zambretti.letter ключ" "$FC" '.zambretti | has("letter")'
 assert_jq "/api/forecast: persistence x3 (1/3/6 ч; 24 ч отклонён)" "$FC" '(.persistence | length) == 3'
 assert_jq "/api/forecast: calc_ts не null" "$FC" '.calc_ts != null'
 cget "${AUTH[@]}" "$B/api/meta"
