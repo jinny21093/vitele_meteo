@@ -23,7 +23,10 @@ daily (timer 00:05 MSK):
   - чистка forecast старше 30 дней.
 Наблюдаемость: materializer_log на каждый прогон; указатели wmeta
 last_agg_hourly_epoch/last_agg_daily_epoch (epoch начала последнего обработанного окна).
-Миграция v3: ALTER TABLE forecast ADD COLUMN text TEXT (идемпотентно).
+Миграции: v3 — ALTER TABLE forecast ADD COLUMN text TEXT (идемпотентно,
+  с записью в schema_migrations); letter — ALTER TABLE forecast ADD COLUMN
+  letter TEXT (идемпотентно, БЕЗ записи в schema_migrations — практика
+  смоук-prepare: чек meta migrations ждёт версию копии БД 2, см. U5-T2).
 PRAGMA busy_timeout/synchronous — на каждом соединении (§3.2). stdlib-only."""
 import json
 import math
@@ -64,6 +67,23 @@ def meta_set(con, key, value, now):
     con.execute("INSERT INTO wmeta(key,value,updated_at) VALUES(?,?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                 (key, str(value), now))
+
+
+def migrate_letter(con):
+    """U5-B1 (решение владельца): forecast.letter — буква Замбретти рядом с
+    text. Идемпотентно. В schema_migrations НЕ пишем (отличие от migrate_v3):
+    чек смоука "meta migrations" ждёт последнюю версию копии БД = 2, а
+    колонка копии добавляется смоук-prepare'ом без записи версии — практика
+    forecast.text (U5-T2). Колонка не имеет собственной версии схемы:
+    добавить её можно на живой БД без остановки этапа B."""
+    cols = [r[1] for r in con.execute("PRAGMA table_info(forecast)")]
+    if "letter" in cols:
+        return False
+    con.execute("BEGIN IMMEDIATE")
+    con.execute("ALTER TABLE forecast ADD COLUMN letter TEXT")
+    con.execute("COMMIT")
+    log("миграция letter применена (forecast.letter, без schema_migrations)")
+    return True
 
 
 def migrate_v3(con, now):
@@ -298,12 +318,15 @@ def write_forecasts(con, now):
                     (issued, issued + hz, "persistence", last[1], last[2], last[3],
                      last[4], 0.5))
         n += 1
+    # U5-B1: буква Замбретти пишется той же формулой zambretti(), что даёт
+    # text (один вызов — один источник истины); 24 ч горизонт НЕ добавляем
+    # (решение владельца: остаётся 1/3/6 persistence + Замбретти +6/+12).
     letter, text = zambretti(last[2], tend, mon)
     if text:
         for hz in (21600, 43200):
             con.execute("INSERT OR REPLACE INTO forecast(issued_at,target_ts,source,"
-                        "confidence,text) VALUES(?,?,?,?,?)",
-                        (issued, issued + hz, "zambretti", 0.5, text))
+                        "confidence,text,letter) VALUES(?,?,?,?,?,?)",
+                        (issued, issued + hz, "zambretti", 0.5, text, letter))
             n += 1
     sager_note = "ночь"
     if 10 <= loc_h < 16:
@@ -387,6 +410,7 @@ def main():
     now = int(time.time())
     con = open_db(db)
     mig = migrate_v3(con, now)
+    migrate_letter(con)                     # U5-B1: идемпотентно, без версии
     if kind == "probe":
         print("last_agg_hourly_epoch:", meta_get(con, "last_agg_hourly_epoch"))
         print("last_agg_daily_epoch:", meta_get(con, "last_agg_daily_epoch"))
