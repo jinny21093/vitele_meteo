@@ -383,6 +383,11 @@ if [[ "$MODE" == "unit-test" && "$UNIT_WAS_ACTIVE" == "1" ]]; then
 fi
 
 echo
+if [[ "$FAILS" -gt 0 && -f "$WORK/server_$TEST_PORT.log" ]]; then
+  echo "--- server.log (тестовый, последние 15 строк) ---"
+  tail -15 "$WORK/server_$TEST_PORT.log"
+  echo "--- конец server.log ---"
+fi
 echo "====================================================="
 if [[ "$FAILS" -gt 0 ]]; then
   echo "VERIFY $MODE: FAIL — $((N-FAILS)) OK / $FAILS FAIL из $N (провалены:$FAILED_LIST)"
