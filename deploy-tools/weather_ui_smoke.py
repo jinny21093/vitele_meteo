@@ -16,6 +16,12 @@ available:false (не 503); конверт по разведке (calc_ts/age_s/
 zambretti text+conf+targets 6/12ч, sager, persistence ×3 с horizon_h);
 stale после UPDATE issued_at назад; /forecast 200 + page-forecast.js
 без Chart.js, no-inline; старт без page-forecast.js -> exit 1.
+U5-T2 (v0.4.0, дельты ревью владельца): letter — строка с letter ->
+конверт содержит, легаси (letter NULL) -> null + экран жив; issued_values
+— база расчёта на issued_at (фикстура issued_t=10.0/770.0 строго до
+issued_at, forecast_t=12.0/772.0 -> Δ=+2.0; «сейчас» 12.8/775.8 НЕ
+участвует); истории до issued_at нет -> issued_values null (Δ-ветка
+деградации); клиент — page-forecast.js считает от issued_values.
 DOM-ID forecast-страницы (в перечень; HTML не грепается — на ревью целиком):
 fc-init, fc-init-body, fc-data, fc-fresh, fc-zam, fc-table, fc-sager,
 refresh, last-update (+ общие шапки fresh-dot/fresh-text/batt-dot/batt-text/
@@ -137,6 +143,11 @@ def prepare():
     cols = [r[1] for r in con.execute("PRAGMA table_info(forecast)")]
     if "text" not in cols:
         con.execute("ALTER TABLE forecast ADD COLUMN text TEXT")
+    if "letter" not in [r[1] for r in con.execute("PRAGMA table_info(forecast)")]:
+        # U5-T2: миграция letter этапа B (U5-B1) — практика смоук-prepare:
+        # идемпотентно, в schema_migrations НЕ пишем (чек meta migrations
+        # ждёт последнюю версию копии = 2)
+        con.execute("ALTER TABLE forecast ADD COLUMN letter TEXT")
     d0 = ((now + 10800) // 86400) * 86400 - 10800        # полночь MSK (этап B)
     con.executemany(
         "INSERT INTO v_daily (day_epoch,t_out_min,t_out_max,t_out_avg,t_out_min_time,"
@@ -472,6 +483,60 @@ def main():
         j = json.loads(body)
         check("U5-T1d: прогон 3 ч назад -> stale:true, age_s>=7200",
               st == 200 and j.get("stale") is True and j.get("age_s") >= 7200)
+
+        # --- U5-T2 (v0.4.0, дельты ревью владельца): letter + issued_values ---
+        iss2 = now - 10800                      # issued_at после UPDATE выше (T1d)
+        con = sqlite3.connect(db)
+        # (a) строка с letter -> конверт содержит (источник буквы — этап B)
+        con.execute("UPDATE forecast SET letter='A' WHERE source='zambretti' "
+                    "AND issued_at=?", (iss2,))
+        # (c) база расчёта: замер issued_t=10.0/770.0 строго ДО issued_at
+        # (ts=iss2-60); «сейчас» (ts=now, 12.8/775.8) в Δ НЕ участвует;
+        # forecast_t=12.0/772.0 -> Δ = +2.0 (математика клиента от issued_values)
+        con.execute("INSERT INTO weather (ts, outdoor_temp_c, outdoor_hum_pct, "
+                    "indoor_temp_c, pressure_rel_mmhg, wind_ms) VALUES (?,?,?,?,?,?)",
+                    (iss2 - 60, 10.0, 80.0, 20.0, 770.0, 1.2))
+        con.execute("UPDATE forecast SET t_out_c=12.0, p_rel_mmhg=772.0 "
+                    "WHERE source='persistence' AND issued_at=?", (iss2,))
+        con.commit()
+        con.close()
+        st, _, body = req("/api/forecast", auth="valid")
+        j = json.loads(body)
+        z = j.get("zambretti") or {}
+        check("U5-T2a: строка с letter -> конверт содержит",
+              st == 200 and j.get("available") is True and z.get("letter") == "A")
+        iv = j.get("issued_values")
+        check("U5-T2c: issued_values от issued_at (10.0/770.0), не current 12.8/775.8",
+              iv is not None and iv.get("t_out_c") == 10.0 and
+              iv.get("p_rel_mmhg") == 770.0)
+        pers = j.get("persistence") or []
+        check("U5-T2c: Δ-математика = +2.0 (forecast 12.0 − issued 10.0, не от current)",
+              bool(pers) and bool(iv) and pers[0].get("t_out_c") == 12.0 and
+              round(pers[0]["t_out_c"] - iv["t_out_c"], 1) == 2.0 and
+              round(pers[0]["p_rel_mmhg"] - iv["p_rel_mmhg"], 1) == 2.0)
+        st, _, body = req("/static/page-forecast.js", auth="valid")
+        check("U5-T2d: клиент Δ от issued_values (page-forecast.js содержит)",
+              st == 200 and b"issued_values" in body and b"calc_ts" in body)
+        # (b) легаси: строка без letter -> letter null; (e) истории до
+        # issued_at нет -> issued_values null (Δ-ветка деградации)
+        con = sqlite3.connect(db)
+        con.execute("UPDATE forecast SET letter=NULL WHERE source='zambretti' "
+                    "AND issued_at=?", (iss2,))
+        con.execute("UPDATE forecast SET issued_at=(SELECT MIN(ts)-100 FROM weather) "
+                    "WHERE issued_at=?", (iss2,))
+        con.commit()
+        con.close()
+        st, _, body = req("/api/forecast", auth="valid")
+        j = json.loads(body)
+        z = j.get("zambretti") or {}
+        check("U5-T2b: легаси-строка без letter -> letter null, текст жив",
+              st == 200 and z.get("text") is not None and z.get("letter") is None)
+        check("U5-T2e: истории до issued_at нет -> issued_values null",
+              st == 200 and j.get("issued_values") is None and
+              j.get("persistence"))
+        st, _, _ = req("/forecast", auth="valid")
+        check("U5-T2b: экран жив при легаси/деградации (/forecast 200)", st == 200)
+
         st, _, _ = req("/api/export.csv?from=1&to=2", auth="valid")
         check("export 404 (U6)", st == 404)
 
