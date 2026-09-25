@@ -1,12 +1,50 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather-ui server.py v0.4.1 (U0-U5 + фиксы ревью GLM r1-r6) — дашборд
+"""weather-ui server.py v0.5.0 (U0-U6 + фиксы ревью GLM r1-r6) — дашборд
 погодной станции, stdlib-only.
 
-ТЗ: weather-ui-spec.md v1.2.7 (§2.2/§2.3/§3 — синхронизация U7). Задачи:
-weather-ui-4 (U5 «Прогноз») закрыт; U6 Настройки+export.csv — впереди;
-U7 systemd+Kuma+verify — юнит/loopback/verify (см. deploy-tools/verify_stage_ui.sh).
+ТЗ: weather-ui-spec.md v1.2.8 (§4.6/§5.9/§5.10/§5.11 — U6). Задачи: U7 закрыт
+(юнит/loopback/verify, deploy-tools/verify_stage_ui.sh); U6 «Настройки+Экспорт».
 
+  v0.5.0 U6 (SERVER_VERSION 0.5.0 — новые эндпоинты = minor §4.0; деплоированный
+        код меняется). Три серверных механики:
+        S1 /api/export.csv (§5.9 v1.2.8): GET, type=history|hourly|daily ->
+          weather/v_hourly/v_daily; fields= по PRAGMA-whitelist; separator=;|,
+          (дефолт ; — Excel, RFC 4180); pre-COUNT по тому же WHERE -> оценка
+          байт (строки × поля × 10) -> > 300 МБ -> 413 + X-Export-Rows (фактич.
+          число строк) ДО первого байта CSV; окно <= 366 д (спека v1.2.7 §5.9
+          «31 д» заменена — U6-задание, зафиксировано в v1.2.8); стриминг
+          chunked (Transfer-Encoding, БЕЗ Content-Length) батчами 500 строк;
+          коннект живёт от db_open до конца стрима — семафорный слот занят
+          ровно это время (единственный long-lived обработчик; зависший клиент
+          рвётся HANDLER_TIMEOUT=10 — per-op inactivity); BEGIN перед COUNT —
+          единый WAL-снапшот COUNT+SELECT; ошибка БД после заголовков —
+          честный 503 уже невозможен: терминальный chunk (файл обрезан) +
+          ERROR в лог; NULL -> пустая ячейка; BOM НЕ пишется (A10/U8, параметр
+          bom из v1.2.7 отменён); CSV-injection: колонки с decltype TEXT
+          (weather.battery_raw, v_hourly/v_daily.wind_dir_mode) при первом
+          символе = + - @ префиксуются апострофом (числовые — нет: минус
+          температуры легитимен); опциональный limit=N (1..100000, AFTER
+          pre-COUNT) — пробник клиента U6-C2 (limit=1) проходит ту же
+          проверку 413; filename weather-<type>-<from>-<to>.csv.
+        S2 GET /api/settings (§5.10): конверт = /api/meta, но wmeta
+          ФИЛЬТРУЕТСЯ на сервере по WMETA_VISIBLE (units, tz,
+          tz_offset_seconds, gdd_tbase_c, ok_total, err_total, last_ok,
+          schema_version) — пути/station_ip/mac на экран Настроек не
+          попадают; /api/meta НЕ тронут (контракт §5.7 — «wmeta объект»
+          целиком — ломать фильтрацией нельзя, app.js читает оттуда TZ).
+        S3 POST /api/check-db (§5.11, ЕДИНСТВЕННЫЙ POST системы): PRAGMA
+          quick_check на query_only-коннекте (чтение — принцип «UI не пишет
+          в БД» не нарушен); СВЕРКА С3 ревьювера: db_health в wmeta не пишет
+          НИКТО (этап B кладёт только last_agg_hourly/daily_epoch) — поэтому
+          «кэшировать результат в wmeta» отклонено (это была бы ЗАПИСЬ из
+          UI); владелец ключа — этап B, POST отвечает своим результатом
+          синхронно; таймаут 60 с через set_progress_handler (statement-
+          timeout в sqlite3 нет) -> 503 {"error":"check timed out"};
+          rate-limit 1/мин/IP (тот же RateLimiter) -> 429 + Retry-After;
+          попытка учитывается ДО работы (таймаут тоже «стоит» слота лимита).
+        Клиент: settings.html + page-settings.js (M-4: required-статика);
+        app.js — только UI_VERSION 0.5.0 (навигация/хелперы уже покрывали U6).
   v0.4.1 U7-2: loopback 127.0.0.1 в BIND_HOSTS (config.py) — Uptime Kuma на
         той же VM целится в http://127.0.0.1:8089/api/health и не зависит
         от LAN/ZT-интерфейса (спека v1.2.7 §2.3). Бамп SERVER_VERSION —
@@ -84,9 +122,11 @@ U7 systemd+Kuma+verify — юнит/loopback/verify (см. deploy-tools/verify_s
         битого context (§5.5).
 """
 import base64
+import csv
 import gzip
 import hashlib
 import hmac
+import io
 import json
 import os
 import signal
@@ -95,13 +135,13 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import config
 
-SERVER_VERSION = "0.4.1"
+SERVER_VERSION = "0.5.0"
 
 # --- фиксированные списки (§0.7: имена/типы — только whitelist) ---
 # Типы событий: полный каталог патча v1.2.3 §5.5 (21 тип) — этап A (коллектор) +
@@ -130,6 +170,28 @@ HOURLY_WINDOW = 90 * 86400      # §5.3: окно <= 90 дней (<= 2160 стр
 # свежий прогон старше 2 ч = 2 пропущенных прогона подряд -> stale:true
 FORECAST_STALE_S = 7200
 DAILY_WINDOW = 365 * 86400      # §5.4: окно <= 365 дней
+# --- U6 /api/export.csv (§5.9 v1.2.8) ---
+# Окно export: 366 дней (U6-задание; спека v1.2.7 §5.9 «31 д» — наследие
+# одно-табличного export v1.2.2, заменена в v1.2.8). Реальный размер ответа
+# гвардит pre-COUNT-оценка (EXPORT_MAX_BYTES), а не окно.
+EXPORT_WINDOW = 366 * 86400
+# type= -> (таблица, ts-колонка WHERE). Имена — внутренние константы (§0.7:
+# f-string по таблице/колонке допустим только для констант модуля).
+EXPORT_TYPES = {"history": ("weather", "ts"),
+                "hourly": ("v_hourly", "hour_epoch"),
+                "daily": ("v_daily", "day_epoch")}
+EXPORT_AVG_FIELD_BYTES = 10     # оценка ширины поля CSV (строки × поля × 10)
+EXPORT_CHUNK_ROWS = 500         # строк на chunk (задание U6: батчи ~500)
+EXPORT_MAX_LIMIT = 100000       # опциональный limit= (пробник U6-C2: limit=1)
+CSV_INJECT_CHARS = "=+-@"       # первый символ TEXT-значения -> префикс "'"
+# --- U6 S2/S3 ---
+# §4.6/§5.10: wmeta-ключи, разрешённые к показу на экране Настроек (фильтр на
+# СЕРВЕРЕ, не на клиенте). РОВНО список ревьювера (U6-S2): пути/station_ip/mac
+# не показываем. /api/meta остаётся без фильтра (контракт §5.7).
+WMETA_VISIBLE = ("units", "tz", "tz_offset_seconds", "gdd_tbase_c",
+                 "ok_total", "err_total", "last_ok", "schema_version")
+CHECK_DB_PROGRESS_OPS = 1000    # шаг set_progress_handler (гранулярность ~мс)
+CHECK_DB_MAX_ROWS = 50          # строк quick_check в ответе (остальное — счётчик)
 # §5.3: поля /api/hourly — фиксированный список ТЗ; на старте пересекается с
 # реальными колонками v_hourly (A-2: имена этапа B), порядок — как в ТЗ.
 HOURLY_FIELDS = ("hour_epoch", "t_out_avg", "t_out_min", "t_out_max", "p_rel_avg",
@@ -149,8 +211,8 @@ WINDOW_DELTA_COLS = ("pressure_rel_mmhg", "outdoor_temp_c")
 COLLECTOR_OK_GAP = 180          # сек: коллектор пишет раз в 60 с; 3 цикла = ok
 MAX_EPOCH = 2 ** 62             # защита от bigint, который не лезет в sqlite3
 
-# HTML-страницы (маршрут -> файл в static/). U4/U5 — настоящие экраны
-# (v0.3.0/v0.4.0); U6 — пока заглушка.
+# HTML-страницы (маршрут -> файл в static/). U4/U5/U6 — настоящие экраны
+# (v0.3.0/v0.4.0/v0.5.0).
 PAGES = {"/": "index.html", "/day": "day.html", "/month": "month.html",
          "/events": "events.html", "/forecast": "forecast.html",
          "/settings": "settings.html"}
@@ -230,6 +292,22 @@ def load_agg_fields(db_path, table, spec_fields):
         alog("ERROR", f"startup: {table} has none of the spec fields")
         sys.exit(1)
     return served
+
+
+def load_table_columns(db_path, table):
+    """U6-S1 (§5.9 v1.2.8): колонки таблицы export из PRAGMA table_info на старте
+    — [(name, decltype-upper)]. decltype нужен для CSV-injection-гварда (TEXT-колонки).
+    Таблица отсутствует — ERROR+exit (этапы A/B обязательны по условию внедрения)."""
+    assert table in ("weather", "v_hourly", "v_daily")  # §0.7: не user-input
+    con = db_open(db_path)
+    try:
+        info = con.execute(f"PRAGMA table_info({table})").fetchall()
+    finally:
+        con.close()
+    if not info:
+        alog("ERROR", f"startup: table {table} not found db={db_path}")
+        sys.exit(1)
+    return [(r[1], (r[2] or "").upper()) for r in info]
 
 
 def window_delta(con, col, end_ts, hours):
@@ -422,13 +500,14 @@ class UiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, code, obj):
+    def _json(self, code, obj, extra=None):
         body = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
         body = body.encode("utf-8")
         if len(body) > config.JSON_MAX_BYTES:          # §5.0: JSON <= 10 МБ
             alog("ERROR", f"json too large bytes={len(body)} path={self.path[:120]}")
             code, body = 500, b'{"error":"response too large"}'
-        self._respond(code, body, "application/json; charset=utf-8", "no-store")
+        self._respond(code, body, "application/json; charset=utf-8", "no-store",
+                      extra=extra)
 
     def _safe_json(self, code, obj):
         """Ответ из обработчика ошибок — молча, если клиент уже ушёл."""
@@ -569,8 +648,7 @@ class UiHandler(BaseHTTPRequestHandler):
         if path == "/api/forecast":
             return self._api_forecast()
         if path == "/api/export.csv":
-            self._json(404, {"error": "endpoint planned for U6, absent in U0-U5"})
-            return 404
+            return self._api_export(u.query)          # U6-S1 (§5.9 v1.2.8)
         if path == "/favicon.ico":            # чтобы не шуметь 404 в логе
             return self._serve_static("/static/icons/favicon.svg")
         page = PAGES.get(path)
@@ -912,6 +990,170 @@ class UiHandler(BaseHTTPRequestHandler):
         })
         return 200
 
+    def _api_export(self, query):
+        """§5.9 (v1.2.8, U6-S1): GET /api/export.csv — CSV-стриминг сырых таблиц.
+        type=history|hourly|daily -> weather / v_hourly / v_daily (константы
+        EXPORT_TYPES); fields= — whitelist PRAGMA (дефолт: все колонки таблицы;
+        для weather исключены сервисные id/schema_version — дисциплина §5.1);
+        separator=;|, (дефолт ; — Excel, RFC 4180 lineterminator=\\r\\n);
+        limit= — опциональный LIMIT (пробник U6-C2; валиден 1..100000).
+
+        Pre-COUNT ДО стриминга: BEGIN (единый WAL-снапшот COUNT+SELECT) ->
+        COUNT(*) по ТОМУ ЖЕ WHERE -> оценка байт = строки × поля ×
+        EXPORT_AVG_FIELD_BYTES(10) -> > EXPORT_MAX_BYTES (300 МБ) -> 413 +
+        X-Export-Rows (фактическое число строк) ДО первого байта CSV. Окно
+        > 366 д -> 400 (гвард _required_window): 413 — про РАЗМЕР, 400 — про
+        ОКНО (ответ на вопрос U6-T1 ревьювера).
+
+        Стриминг: chunked (Transfer-Encoding: chunked, БЕЗ Content-Length),
+        батчи EXPORT_CHUNK_ROWS=500 строк через fetchmany, csv.writer в
+        StringIO (quoting QUOTE_MINIMAL = RFC 4180), Connection: close
+        (send_header сам ставит close_connection — keep-alive после chunked
+        не открываем).
+
+        ЖИЗНЬ КОННЕКТА (решение S1, задание U6): коннект открывается ПОСЛЕ
+        валидаций и закрывается в finally ПОСЛЕ конца/обрыва стрима — он живёт
+        РОВНО столько, сколько живёт обработчик (генератор наружу не
+        возвращается — цикл fetchmany/write ведёт сам обработчик). Семафорный
+        слот (acquire в process_request до потока, release в
+        process_request_thread после обработчика) занят всё это время — это
+        ЕДИНСТВЕННЫЙ long-lived обработчик (§5.0 v1.2.8); зависший клиент
+        рвётся HANDLER_TIMEOUT (per-op inactivity: write в полный TCP-буфер
+        даёт socket.timeout) — слот освобождается, утечки нет. WAL: длинный
+        read-стрим не блокирует коллектора.
+
+        Ошибка БД ДО заголовков (db_open/BEGIN/COUNT/SELECT) — штатный 503
+        через do_GET. Ошибка БД ПОСЛЕ заголовков — честный 503 уже невозможен:
+        best-effort терминальный chunk (файл обрезан), ERROR в лог, код 200
+        (статус уже отправлен).
+
+        CSV-injection (§5.9 v1.2.8): значения колонок с decltype TEXT
+        (по PRAGMA на старте; фактически weather.battery_raw,
+        v_hourly/v_daily.wind_dir_mode) при первом символе из = + - @
+        префиксуются апострофом; числовые колонки НЕ трогаем (минус
+        температуры легитимен). NULL -> пустая ячейка (csv.writer пишет None
+        как ""). BOM не пишется (A10/U8; параметр ?bom из v1.2.7 отменён).
+        """
+        qs = parse_qs(query, keep_blank_values=True)
+        win = self._required_window(qs, EXPORT_WINDOW)
+        if win is None:
+            return 400
+        frm, to = win
+        etype = (qs.get("type", ["history"])[0] or "history").strip()
+        if etype not in EXPORT_TYPES:
+            self._json(400, {"error": "unknown type",
+                             "allowed": list(EXPORT_TYPES)})
+            return 400
+        table, tcol = EXPORT_TYPES[etype]
+        sep = qs.get("separator", [";"])[0]
+        if sep not in (";", ","):
+            self._json(400, {"error": "unknown separator",
+                             "allowed": [";", ","]})
+            return 400
+        limit = self._safe_int(qs.get("limit", [None])[0])
+        if limit is not None and not (1 <= limit <= EXPORT_MAX_LIMIT):
+            self._json(400, {"error": "invalid limit", "max": EXPORT_MAX_LIMIT})
+            return 400
+        all_cols = self.server.export_cols[table]        # whitelist старта
+        text_cols = self.server.export_text[table]
+        fields = self._csv_param(qs, "fields")
+        if fields is None:
+            fields = list(all_cols)
+        else:
+            seen = []
+            for f in fields:
+                if f not in all_cols:
+                    self._json(400, {"error": "unknown field", "field": f})
+                    return 400
+                if f not in seen:
+                    seen.append(f)
+            fields = seen
+        text_idx = [i for i, f in enumerate(fields) if f in text_cols]
+        # §0.7: имена — из whitelist старта (load_table_columns); values — ?
+        cols_sql = ", ".join(fields)
+        lim_sql, lim_param = ((" LIMIT ?", limit) if limit is not None
+                              else ("", None))
+        fname = ("weather-%s-%s-%s.csv" % (
+            etype,
+            datetime.fromtimestamp(frm, tz=timezone.utc).strftime("%Y-%m-%d"),
+            datetime.fromtimestamp(to, tz=timezone.utc).strftime("%Y-%m-%d")))
+        con = db_open(self.server.db_path)
+        try:
+            # единый read-снапшот для COUNT + SELECT (изоляция авто-commit
+            # дала бы два разных снапшота; read-txn не мешает коллектору — WAL)
+            con.execute("BEGIN")
+            count = con.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {tcol}>=? AND {tcol}<=?",
+                (frm, to)).fetchone()[0]
+            est = count * len(fields) * EXPORT_AVG_FIELD_BYTES
+            if est > config.EXPORT_MAX_BYTES:
+                # §5.9: честная ошибка ДО первого байта CSV; заголовок несёт
+                # фактическое число строк (задание U6-S1)
+                self._json(413, {"error": "export too large", "rows": count,
+                                 "estimated_bytes": est,
+                                 "limit_bytes": config.EXPORT_MAX_BYTES},
+                           extra=(("X-Export-Rows", str(count)),))
+                return 413
+            cur = con.execute(
+                f"SELECT {cols_sql} FROM {table} WHERE {tcol}>=? AND {tcol}<=? "
+                f"ORDER BY {tcol}{lim_sql}",
+                (frm, to, limit) if lim_param else (frm, to))
+            self._start(200, (
+                ("Content-Type", "text/csv; charset=utf-8"),
+                ("Cache-Control", "no-store"),
+                ("Content-Disposition", f'attachment; filename="{fname}"'),
+                ("Transfer-Encoding", "chunked"),
+                ("Connection", "close"),   # send_header ставит close_connection
+            ))
+            self.end_headers()
+            try:
+                wbuf = io.StringIO()
+                cw = csv.writer(wbuf, delimiter=sep, lineterminator="\r\n")
+                cw.writerow(fields)
+                self._chunk(wbuf.getvalue().encode("utf-8"))
+                n_sent = 0
+                while True:
+                    rows = cur.fetchmany(EXPORT_CHUNK_ROWS)
+                    if not rows:
+                        break
+                    wbuf = io.StringIO()
+                    cw = csv.writer(wbuf, delimiter=sep, lineterminator="\r\n")
+                    if text_idx:
+                        for r in rows:
+                            r = list(r)
+                            for i in text_idx:
+                                v = r[i]
+                                if v is not None:
+                                    s = str(v)
+                                    if s[:1] in CSV_INJECT_CHARS:
+                                        s = "'" + s
+                                    r[i] = s
+                            cw.writerow(r)
+                    else:
+                        cw.writerows(rows)
+                    self._chunk(wbuf.getvalue().encode("utf-8"))
+                    n_sent += len(rows)
+                self.wfile.write(b"0\r\n\r\n")
+            except sqlite3.Error:            # §5.9 v1.2.8: после заголовков
+                # честный 503 невозможен — файл обрезается терминальным chunk
+                alog("ERROR", f"export aborted mid-stream rows={n_sent} "
+                              f"type={etype}")
+                try:
+                    self.wfile.write(b"0\r\n\r\n")
+                except OSError:
+                    pass                     # клиент уже ушёл
+                self.close_connection = True
+                return 200                   # статус уже отправлен (200)
+        finally:
+            con.close()                      # S1: close ПОСЛЕ генератора
+        return 200
+
+    def _chunk(self, data):
+        """Один chunked-фрейм RFC 7230: <hex-len>\\r\\n data \\r\\n."""
+        self.wfile.write(("%x\r\n" % len(data)).encode("ascii")
+                         + data + b"\r\n")
+        self.wfile.flush()
+
     def _api_events(self, query):
         """§5.5: окно <= 90 д, types/severity CSV по фиксированным спискам,
         LIMIT 5000 + truncated; единый конверт {from, to, rows, truncated};
@@ -1024,6 +1266,15 @@ def main(argv):
     now_cols = [c for c in wcols_list if c not in NOW_EXCLUDE]   # §5.1 v1.2.3
     hourly_fields = load_agg_fields(db_path, "v_hourly", HOURLY_FIELDS)   # §5.3
     daily_fields = load_agg_fields(db_path, "v_daily", DAILY_FIELDS)      # §5.4
+    # U6-S1 (§5.9 v1.2.8): whitelist колонок export по PRAGMA на старте + карта
+    # TEXT-колонок для CSV-injection-гварда (weather: minus id/schema_version
+    # — дисциплина NOW_EXCLUDE §5.1; battery_raw остаётся — он в §4.0)
+    export_cols, export_text = {}, {}
+    for tbl in ("weather", "v_hourly", "v_daily"):
+        info = load_table_columns(db_path, tbl)
+        export_cols[tbl] = [c for c, _t in info
+                            if not (tbl == "weather" and c in NOW_EXCLUDE)]
+        export_text[tbl] = frozenset(c for c, t in info if "TEXT" in t)
     limiter = RateLimiter(config.RATE_LIMIT, config.RATE_WINDOW)
 
     semaphore = threading.BoundedSemaphore(config.MAX_CONCURRENT)
@@ -1046,6 +1297,8 @@ def main(argv):
         httpd.now_cols = now_cols
         httpd.hourly_fields = hourly_fields
         httpd.daily_fields = daily_fields
+        httpd.export_cols = export_cols
+        httpd.export_text = export_text
         servers.append(httpd)
 
     # §2.2: shutdown() из обработчика сигнала — в ОТДЕЛЬНОМ потоке

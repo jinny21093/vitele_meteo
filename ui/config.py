@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""config.py — конфиг weather-ui server.py (ТЗ weather-ui-spec.md v1.2.2).
+"""config.py — конфиг weather-ui server.py (ТЗ weather-ui-spec.md v1.2.8).
 
 Правится на хосте при установке (U7). Пароль НЕ хранится здесь — только путь
 к ~/.weather-ui-credentials (600, вне репо, §3). Все пути абсолютные.
@@ -32,8 +32,15 @@ RATE_WINDOW = 60         # сек
 
 # --- Ограничения (§5.0, §7) ---
 MAX_CONCURRENT = 20      # семафор соединений (BoundedSemaphore)
-HANDLER_TIMEOUT = 10     # per-op inactivity сокета, сек (НЕ wall-clock дедлайн)
-JSON_MAX_BYTES = 10 * 1024 * 1024   # исключение — будущий /api/export.csv (§5.9)
+HANDLER_TIMEOUT = 10     # per-op inactivity сокета, сек (НЕ wall-clock дедлайн;
+                         # стриминг export.csv легитимен, пока сокет активен)
+JSON_MAX_BYTES = 10 * 1024 * 1024   # лимит JSON-ответов; export.csv (§5.9) —
+                         # не JSON и живёт своим chunked-стримом
+
+# --- Export CSV (§5.9 v1.2.8, U6-S1) ---
+# Pre-COUNT ДО стриминга: оценка байт = строки × поля × 10 (EXPORT_AVG_FIELD_BYTES
+# в server.py); оценка больше лимита -> 413 + X-Export-Rows до первого байта CSV.
+EXPORT_MAX_BYTES = 300 * 1024 * 1024   # 300 МБ (задание U6-S1)
 
 # --- Пути ---
 BASE_DIR = "/home/auditbot/weather-dash/ui"
