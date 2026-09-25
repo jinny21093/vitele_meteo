@@ -50,6 +50,7 @@ ok()   { N=$((N+1)); printf "  OK   V%03d %s\n" "$N" "$1"; }
 bad()  { N=$((N+1)); FAILS=$((FAILS+1)); FAILED_LIST="$FAILED_LIST V$(printf '%03d' "$N")";
          printf " FAIL  V%03d %s\n" "$N" "$1"; }
 skip() { N=$((N+1)); printf " SKIP  V%03d %s\n" "$N" "$1"; }
+warn() { N=$((N+1)); printf " WARN  V%03d %s\n" "$N" "$1"; }
 
 assert_eq() { # name got want
   if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got: '$2', want: '$3')"; fi
@@ -336,6 +337,47 @@ if [[ "$MODE" == "deploy" ]] && command -v ss >/dev/null 2>&1 && [[ -d /home/aud
   fi
 else
   skip "G9 вне контекста deploy-on-VM"
+fi
+
+echo "== G12. Дрейф runtime-vs-repo (deploy на VM; А5 ревьюера — урок Х-1) =="
+# Манифест = md5 файлов РЕПО на момент коммита этого скрипта. Совпало -> ok;
+# не совпало -> WARN-строка с именем файла (НЕ FAIL: либо синк на VM забыт —
+# файл runtime != репо, либо манифест отстал от свежего коммита — оба случая
+# требуют взгляда). Пересборка манифеста: md5sum stage-a/*.py stage-b/*.py
+# ui/server.py ui/config.py ui/static/app.js ui/static/page-forecast.js
+# ui/weather-ui.service. Синк расходящихся: deploy-tools/weather_ui_deploy_v041.py
+if [[ "$MODE" == "deploy" ]]; then
+  drift() { # relpath runtime_path expected_md5
+    if [[ ! -f "$2" ]]; then skip "дрейф $1: на VM нет $2"; return; fi
+    local got; got=$(md5sum "$2" | cut -d' ' -f1)
+    if [[ "$got" == "$3" ]]; then
+      ok "md5 $1 = репо"
+    else
+      warn "ДРЕЙФ $1: runtime ${got:0:10} != репо ${3:0:10} (синк не выполнен — см. weather_ui_deploy_v041.py, или манифест устарел)"
+    fi
+  }
+  DASHDIR=/home/auditbot/weather-dash
+  drift stage-a/migrate_v1_v2.py     "$DASHDIR/migrate_v1_v2.py"            248f872558f99fe25330b8ee2106a618
+  drift stage-a/weather_collector.py "$DASHDIR/weather_collector.py"        d36d974cd623d05d1ba0009cc4881448
+  drift stage-b/weather_aggregator.py "$DASHDIR/weather_aggregator.py"      1fb40948b5d2713e681e3c7970333f31
+  drift stage-b/weather_api.py       "$DASHDIR/weather_api.py"              2ebcef7dd11b9fdd05628ffe64a66633
+  drift stage-b/weather_zam.py       "$DASHDIR/weather_zam.py"              f12fe675848094db37b9a52cf1b79026
+  drift ui/server.py                 "$DASHDIR/ui/server.py"                f3fe5b4c9d733b6459cb2fdf58d953b7
+  drift ui/config.py                 "$DASHDIR/ui/config.py"                feb55c2c4331fb28405234841c45ab0a
+  drift ui/static/app.js             "$DASHDIR/ui/static/app.js"            db81cb32a184196705e8393e74595534
+  drift ui/static/page-forecast.js   "$DASHDIR/ui/static/page-forecast.js"  23a73e00e330b55c3711772abae0401d
+  if [[ -f /etc/systemd/system/weather-ui.service ]]; then
+    UGOT=$(md5sum /etc/systemd/system/weather-ui.service | cut -d' ' -f1)
+    if [[ "$UGOT" == "e1d6953d452f33e72227096c5137d94f" ]]; then
+      ok "md5 ui/weather-ui.service = репо (/etc/systemd/system)"
+    else
+      warn "ДРЕЙФ ui/weather-ui.service (/etc): runtime ${UGOT:0:10} != репо e1d6953d45"
+    fi
+  else
+    skip "дрейф ui/weather-ui.service: /etc-копии нет"
+  fi
+else
+  skip "дрейф runtime-vs-repo — вне deploy-режима"
 fi
 
 # --- фикстурные проверки (ТОЛЬКО local/unit-test, на копии) ---
