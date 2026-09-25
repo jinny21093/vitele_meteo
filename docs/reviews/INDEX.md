@@ -48,6 +48,7 @@
 | 2026-09-22-weather-night.md | операционный | актуален | Ночной обзор 21→22.09: дождь 13.5 мм, мин T +3.4, сбор без дыр; PPPoE 03:01 — плановый ретрейн; Kuma push-stall 17 мин — под наблюдением; .66 SNTP→ задача. |
 | 2026-09-24-u5-v040-delta-report.md | отчёт | done | U5 дельты по решениям владельца: letter Замбретти (этап B+UI), issued_values (Δ «от базы расчёта»), Sager-горизонт от calc_ts, спека v1.2.6, смоук 127/0, деплой v0.4.0 ALL STEPS PASSED (letter — после прогона *:02). |
 | 2026-09-25-u7-unit-kuma-verify-report.md | отчёт | done | U7: systemd-юнит (Restart=on-failure, kill -9 → автоперезапуск), loopback 127.0.0.1 (SERVER_VERSION 0.4.1), Kuma-монитор id=76 GET loopback 60 с (Up→Down→Up), verify_stage_ui.sh local/deploy/unit-test 85/75/94 ALL PASSED, спека v1.2.7, почва U6; НАХОДКА Х-1: runtime-агрегатор на VM pre-U5 (letter не появится без синка stage-b), Х-2: events пуста. |
+| 2026-09-25-u7-dosdacha-sync-report.md | отчёт | done | Досдача по ревью: Х-1 ЗАКРЫТ (синк collector battery 1599d40 + aggregator letter, слоты 09:02/10:02, "letter":"A" в конверте), А0 гвард migrate_letter подтверждён, А5 структурный фикс (weather_ui_deploy_v041.py полный синк + verify G12 дрейф runtime-vs-repo, deploy 85/0), Б1–Б4 артефакты (юнит 30 строк, 11 коммитов verbatim, фактический простой 7 мин 06 с ≠ ~12 мин). |
 
 ## Цепочка UI-ревью (порядок чтения)
 
