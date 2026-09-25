@@ -556,9 +556,10 @@ if [[ "$MODE" != "deploy" ]]; then
       NROWS=$(sqlite3 "$WORK/test.db" "SELECT COUNT(*) FROM weather WHERE ts>=${WMIN:-0} AND ts<=$WMAX;" 2>/dev/null)
       EST=$(( ${NROWS:-0} * ${NCOLS:-0} * 10 ))
       if [[ "$EST" -gt 100000 ]]; then
-        cget "${AUTH[@]}" "$B/api/export.csv?from=$WMIN&to=$WMAX"
+        RC=$(curl -s -D "$WORK/h413.h" -o "$TMPJSON" -w '%{http_code}' --max-time 8 "${AUTH[@]}" "$B/api/export.csv?from=$WMIN&to=$WMAX" 2>/dev/null)
         assert_eq "export полного диапазона при --export-max-bytes 100000 -> 413 (pre-COUNT до байтов CSV)" "$RC" "413"
         assert_jq "413 тело: rows/estimated_bytes/limit_bytes" "$(cat "$TMPJSON")" 'has("rows") and has("estimated_bytes") and has("limit_bytes")'
+        assert_contains "413 несёт X-Export-Rows=$NROWS (заголовок, §5.9 — образец u6_smoke)" "$(tr -d '\r' < "$WORK/h413.h")" "X-Export-Rows: ${NROWS}"
         cget "${AUTH[@]}" "$B/api/export.csv?from=$WMIN&to=$WMAX&limit=1"
         assert_eq "пробник limit=1 на переразмерном окне -> 413 (та же pre-COUNT-проверка, U6-C2)" "$RC" "413"
       else
