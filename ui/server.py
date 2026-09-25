@@ -649,6 +649,8 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._api_forecast()
         if path == "/api/export.csv":
             return self._api_export(u.query)          # U6-S1 (§5.9 v1.2.8)
+        if path == "/api/settings":
+            return self._api_settings()               # U6-S2 (§5.10 v1.2.8)
         if path == "/favicon.ico":            # чтобы не шуметь 404 в логе
             return self._serve_static("/static/icons/favicon.svg")
         page = PAGES.get(path)
@@ -662,19 +664,15 @@ class UiHandler(BaseHTTPRequestHandler):
         return 404
 
     def do_POST(self):  # noqa: N802
-        """§3: POST -> 405, исключений нет — UI полностью read-only.
+        """§3: POST -> 405, ЕДИНСТВЕННОЕ исключение — POST /api/check-db
+        (U6-S3, §5.11 v1.2.8): PRAGMA quick_check по требованию.
         m-12 (ревью r1-r3): проходит через _check_auth как GET — лимит
-        неудачных логинов (§3), 429/401 и лог применяются и к POST;
-        успешная авторизация логируется WARN-строкой 405.
+        неудачных логинов (§3), 429/401 и лог применяются и к POST.
         r5-1 (ревью r5): close_connection=True — первой строкой, до auth:
         соединение обязано закрываться в ЛЮБОМ исходе POST (401/429/503
-        тоже) — keep-alive с непрочитанным телом недопустим.
-        r6-3 (ревью r6): auth-отказ (401/429/503) логируется WARN-строкой —
-        GET-брутфорс виден в journald, POST-брутфорс обязан быть виден тоже."""
-        # r4-1/r5-1 (ревью r4/r5): тело POST не читается — drain не нужен,
-        # соединение закрывается. Флаг ставится ДО auth-ветки: после неё
-        # 401/429/503 уходили бы по keep-alive с непрочитанным телом.
-        # Финальный 405 дополнительно несёт заголовок Connection: close.
+        тоже) — keep-alive с непрочитанным телом недопустим. Тело POST
+        не читается (check-db тела не имеет) — соединение закрывается.
+        r6-3 (ревью r6): auth-отказ (401/429/503) логируется WARN-строкой."""
         self.close_connection = True
         ip = self.client_address[0]
         self._auth_user = None
@@ -683,6 +681,31 @@ class UiHandler(BaseHTTPRequestHandler):
             # r6-3 (ревью r6): отказ auth логируется так же, как у GET
             # (do_GET, finally: 4xx -> WARN) — без user=, без ms (t0 нет).
             alog("WARN", f"{self.command} {self.path[:200]} {code} ip={ip}")
+            return
+        u = urlparse(self.path)
+        if u.path == "/api/check-db":          # U6-S3 (§5.11 v1.2.8)
+            t0 = time.monotonic()
+            try:
+                code = self._api_check_db(ip)
+            except sqlite3.Error as e:          # §8: БД недоступна -> 503
+                code = 503
+                alog("ERROR", f"check-db db unavailable err={type(e).__name__}:{e}")
+                self._safe_json(503, {"error": "db unavailable"})
+            except Exception as e:  # noqa: BLE001
+                code = 500
+                alog("ERROR", f"internal err={type(e).__name__}:{e} "
+                              f"path={self.path[:120]}")
+                self._safe_json(500, {"error": "internal error"})
+            ms = int((time.monotonic() - t0) * 1000)
+            line = f"{self.command} {self.path[:200]} {code} {ms}ms ip={ip}"
+            if self._auth_user:                 # §9 (v1.2.3): user= только authed
+                line += f" user={self._auth_user}"
+            if code >= 500:
+                alog("ERROR", line)             # §9: ERROR — 5xx
+            elif code >= 400 or ms > 1000:
+                alog("WARN", line)              # §9: WARN — 4xx, > 1 с
+            else:
+                alog("INFO", line)
             return
         line = f"{self.command} {self.path[:200]} 405 ip={ip}"
         if self._auth_user:
@@ -1154,6 +1177,115 @@ class UiHandler(BaseHTTPRequestHandler):
                          + data + b"\r\n")
         self.wfile.flush()
 
+    def _api_settings(self):
+        """§5.10 (v1.2.8, U6-S2): конверт = /api/meta, но wmeta ФИЛЬТРУЕТСЯ
+        на СЕРВЕРЕ по WMETA_VISIBLE (units, tz, tz_offset_seconds, gdd_tbase_c,
+        ok_total, err_total, last_ok, schema_version — ровно список ревьювера
+        U6-S2): пути/station_ip/mac на экран Настроек не попадают.
+        /api/meta НЕ тронут: контракт §5.7 («wmeta объект» целиком) документи-
+        рован и используется всеми страницами (app.js берёт оттуда TZ) —
+        фильтр там был бы ломающим изменением (решение S2, отчёт U6).
+        db_health идёт отдельным ключом конверта (как в /api/meta) — парсится
+        из НЕфильтрованного словаря: он не элемент wmeta-карточек.
+        Degradation по таблицам — как в _api_meta (m-5): отсутствие
+        wmeta/schema_migrations/collector_log деградирует значение с WARN,
+        но не валит эндпоинт в 503."""
+        con = db_open(self.server.db_path)
+        try:
+            try:
+                raw_wmeta = {k: v for k, v in con.execute(
+                    "SELECT key, value FROM wmeta")}
+            except sqlite3.OperationalError as e:
+                raw_wmeta = {}
+                alog("WARN", f"settings: wmeta unavailable, degraded err={e}")
+            try:
+                mig = con.execute("SELECT version, applied_at, description "
+                                  "FROM schema_migrations ORDER BY version DESC "
+                                  "LIMIT 1").fetchone()
+            except sqlite3.OperationalError as e:
+                mig = None
+                alog("WARN", f"settings: schema_migrations unavailable, degraded err={e}")
+            try:
+                clog = con.execute("SELECT ts, status, latency_ms, bytes, error "
+                                   "FROM collector_log ORDER BY ts DESC "
+                                   "LIMIT 20").fetchall()
+            except sqlite3.OperationalError as e:
+                clog = []
+                alog("WARN", f"settings: collector_log unavailable, degraded err={e}")
+        finally:
+            con.close()
+        wmeta = {k: v for k, v in raw_wmeta.items() if k in WMETA_VISIBLE}
+        db_health = None
+        raw = raw_wmeta.get("db_health")
+        if raw:
+            try:
+                db_health = json.loads(raw)
+            except ValueError:
+                db_health = None
+                alog("WARN", "settings: broken db_health in wmeta (len="
+                              f"{len(raw)})")
+        self._json(200, {
+            "wmeta": wmeta,
+            "schema_migrations": ({"version": mig[0], "applied_at": mig[1],
+                                   "description": mig[2]} if mig else None),
+            "collector_log": [dict(zip(("ts", "status", "latency_ms", "bytes",
+                                        "error"), r)) for r in clog],
+            "db_health": db_health,
+        })
+        return 200
+
+    def _api_check_db(self, ip):
+        """§5.11 (v1.2.8, U6-S3) — ЕДИНСТВЕННЫЙ POST системы. PRAGMA quick_check
+        на query_only-коннекте: это ЧТЕНИЕ — принцип «UI не пишет в БД» не
+        нарушен (§0.4). РЕШЕНИЕ S3 (задание U6 — ДОКЛАД ДО РЕАЛИЗАЦИИ):
+        «кэшировать результат в wmeta db_health» ОТКЛОНЕНО — это была бы
+        ЗАПИСЬ из UI; grep по репо: db_health не пишет НИКТО (этап B кладёт
+        только last_agg_hourly/daily_epoch, weather_aggregator.py:376/393) —
+        владелец ключа этап B; POST отвечает СВОИМ результатом синхронно и
+        ни читает, ни триггерит чужие записи.
+        Таймаут: statement-timeout в sqlite3 нет -> set_progress_handler
+        (_tick, CHECK_DB_PROGRESS_OPS): дедлайн time.monotonic()+timeout,
+        прерывание -> OperationalError 'interrupted' -> 503
+        {"error": "check timed out"}; timeout — config.CHECK_DB_TIMEOUT (60 с),
+        CLI --check-timeout для тестов (verify local: 0 -> гарантированный
+        прерыватель без тяжёлой фикстуры).
+        Rate-limit 1/мин/IP (тот же RateLimiter, отдельный инстанс): попытка
+        фиксируется ДО работы — долбёжка таймаутами тоже стоит слота;
+        повтор в пределах минуты -> 429 + Retry-After: 60 (U6-T2).
+        Ответ 200: {checked_at, duration_ms, status: ok|errors, rows[<=50],
+        row_count, truncated} — quick_check отдаёт 'ok' или список проблем."""
+        if self.server.check_limiter.blocked(ip):
+            self._json(429, {"error": "rate limited: 1 request per minute"},
+                       extra=(("Retry-After", "60"),))
+            return 429
+        self.server.check_limiter.fail(ip)     # попытка фиксируется ДО работы
+        deadline = time.monotonic() + self.server.check_timeout
+
+        def _tick():
+            return 1 if time.monotonic() > deadline else 0
+
+        t0 = time.monotonic()
+        con = db_open(self.server.db_path)     # query_only=ON (§0.4)
+        try:
+            con.set_progress_handler(_tick, CHECK_DB_PROGRESS_OPS)
+            try:
+                all_rows = [r[0] for r in con.execute("PRAGMA quick_check")]
+            except sqlite3.OperationalError as e:
+                if "interrupt" in str(e).lower():
+                    alog("WARN", f"check-db timed out timeout={self.server.check_timeout}s")
+                    self._json(503, {"error": "check timed out"})
+                    return 503
+                raise                          # прочая ошибка БД -> do_POST 503
+        finally:
+            con.close()
+        ms = int((time.monotonic() - t0) * 1000)
+        truncated = len(all_rows) > CHECK_DB_MAX_ROWS
+        status = "ok" if all_rows == ["ok"] else "errors"
+        self._json(200, {"checked_at": int(time.time()), "duration_ms": ms,
+                         "status": status, "rows": all_rows[:CHECK_DB_MAX_ROWS],
+                         "row_count": len(all_rows), "truncated": truncated})
+        return 200
+
     def _api_events(self, query):
         """§5.5: окно <= 90 д, types/severity CSV по фиксированным спискам,
         LIMIT 5000 + truncated; единый конверт {from, to, rows, truncated};
@@ -1231,6 +1363,7 @@ def main(argv):
     hosts = list(config.BIND_HOSTS)
     cred_file = config.CRED_FILE
     static_root = config.STATIC_ROOT
+    check_timeout = config.CHECK_DB_TIMEOUT   # §5.11 (CLI-оверрайд для тестов)
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -1244,9 +1377,11 @@ def main(argv):
             cred_file = args.pop(0)
         elif a == "--static" and args:    # локальные тесты
             static_root = args.pop(0)
+        elif a == "--check-timeout" and args:   # U6-T2: тест таймаут-пути
+            check_timeout = float(args.pop(0))
         else:
             print("usage: server.py [--db PATH] [--port N] [--bind IP] [--cred FILE] "
-                  "[--static DIR]", file=sys.stderr)
+                  "[--static DIR] [--check-timeout SEC]", file=sys.stderr)
             return 2
 
     creds = load_creds(cred_file)
@@ -1276,6 +1411,7 @@ def main(argv):
                             if not (tbl == "weather" and c in NOW_EXCLUDE)]
         export_text[tbl] = frozenset(c for c, t in info if "TEXT" in t)
     limiter = RateLimiter(config.RATE_LIMIT, config.RATE_WINDOW)
+    check_limiter = RateLimiter(config.CHECK_DB_RATE, config.CHECK_DB_RATE_WINDOW)
 
     semaphore = threading.BoundedSemaphore(config.MAX_CONCURRENT)
     servers = []
@@ -1293,6 +1429,8 @@ def main(argv):
         httpd.static = static_map
         httpd.creds = creds
         httpd.limiter = limiter
+        httpd.check_limiter = check_limiter
+        httpd.check_timeout = check_timeout
         httpd.wcols = wcols
         httpd.now_cols = now_cols
         httpd.hourly_fields = hourly_fields

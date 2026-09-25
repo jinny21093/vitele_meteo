@@ -42,6 +42,11 @@ JSON_MAX_BYTES = 10 * 1024 * 1024   # лимит JSON-ответов; export.csv
 # в server.py); оценка больше лимита -> 413 + X-Export-Rows до первого байта CSV.
 EXPORT_MAX_BYTES = 300 * 1024 * 1024   # 300 МБ (задание U6-S1)
 
+# --- Check-db (§5.11 v1.2.8, U6-S3) ---
+CHECK_DB_TIMEOUT = 60    # сек на PRAGMA quick_check (set_progress_handler)
+CHECK_DB_RATE = 1        # POST /api/check-db: попыток в минуту на IP, дальше 429
+CHECK_DB_RATE_WINDOW = 60
+
 # --- Пути ---
 BASE_DIR = "/home/auditbot/weather-dash/ui"
 STATIC_ROOT = BASE_DIR + "/static"
