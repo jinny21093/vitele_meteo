@@ -1019,7 +1019,10 @@ class UiHandler(BaseHTTPRequestHandler):
         EXPORT_TYPES); fields= — whitelist PRAGMA (дефолт: все колонки таблицы;
         для weather исключены сервисные id/schema_version — дисциплина §5.1);
         separator=;|, (дефолт ; — Excel, RFC 4180 lineterminator=\\r\\n);
-        limit= — опциональный LIMIT (пробник U6-C2; валиден 1..100000).
+        limit= — опциональный LIMIT (пробник U6-C2; валиден 1..100000;
+        отсутствует -> без LIMIT; НЕ-ЧИСЛО -> 400, молча игнорировать
+        нельзя — вердикт B-1 ревьювера U6: тихий полный экспорт при
+        опечатке клиента не является честным контрактом).
 
         Pre-COUNT ДО стриминга: BEGIN (единый WAL-снапшот COUNT+SELECT) ->
         COUNT(*) по ТОМУ ЖЕ WHERE -> оценка байт = строки × поля ×
@@ -1073,8 +1076,13 @@ class UiHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "unknown separator",
                              "allowed": [";", ","]})
             return 400
-        limit = self._safe_int(qs.get("limit", [None])[0])
-        if limit is not None and not (1 <= limit <= EXPORT_MAX_LIMIT):
+        raw_limit = qs.get("limit", [None])[0]
+        limit = self._safe_int(raw_limit)
+        # не-число (в т.ч. вне ±MAX_EPOCH) != отсутствующий параметр:
+        # raw есть, а int распарсить не удалось -> 400 (вердикт B-1 U6)
+        if ((raw_limit is not None and limit is None) or
+                (limit is not None and
+                 not (1 <= limit <= EXPORT_MAX_LIMIT))):
             self._json(400, {"error": "invalid limit", "max": EXPORT_MAX_LIMIT})
             return 400
         all_cols = self.server.export_cols[table]        # whitelist старта

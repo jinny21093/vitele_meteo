@@ -133,6 +133,7 @@ CODE=$(curl -s -D "$W/probe.h" -o "$W/probe.csv" -w '%{http_code}' $AU "$A/api/e
 [[ "$(curl -s -o /dev/null -w '%{http_code}' $AU "$A/api/export.csv?from=$T0&to=$((T0+60))&separator=%7C")" == "400" ]] && ok "separator | -> 400" || bad "separator 400"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' $AU "$A/api/export.csv?from=$T0&to=$((T0+60))&type=bogus")" == "400" ]] && ok "type bogus -> 400" || bad "type 400"
 [[ "$(curl -s -o /dev/null -w '%{http_code}' $AU "$A/api/export.csv?from=$T0&to=$((T0+60))&limit=0")" == "400" ]] && ok "limit=0 -> 400" || bad "limit 400"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' $AU "$A/api/export.csv?from=$T0&to=$((T0+60))&limit=abc")" == "400" ]] && ok "limit=abc (не-число) -> 400, НЕ игнорируется (вердикт B-1)" || bad "limit=abc 400"
 # 8) окно > 366 д -> 400 (413 — про размер, 400 — про окно)
 [[ "$(curl -s -o /dev/null -w '%{http_code}' $AU "$A/api/export.csv?from=0&to=$NOW")" == "400" ]] && ok "окно > 366 д -> 400" || bad "окно 400"
 # 9) hourly: инъекция wind_dir_mode '=1+2' -> в файле ''=1+2
