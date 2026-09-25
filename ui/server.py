@@ -1109,12 +1109,12 @@ class UiHandler(BaseHTTPRequestHandler):
                 f"SELECT COUNT(*) FROM {table} WHERE {tcol}>=? AND {tcol}<=?",
                 (frm, to)).fetchone()[0]
             est = count * len(fields) * EXPORT_AVG_FIELD_BYTES
-            if est > config.EXPORT_MAX_BYTES:
+            if est > self.server.export_max_bytes:
                 # §5.9: честная ошибка ДО первого байта CSV; заголовок несёт
                 # фактическое число строк (задание U6-S1)
                 self._json(413, {"error": "export too large", "rows": count,
                                  "estimated_bytes": est,
-                                 "limit_bytes": config.EXPORT_MAX_BYTES},
+                                 "limit_bytes": self.server.export_max_bytes},
                            extra=(("X-Export-Rows", str(count)),))
                 return 413
             cur = con.execute(
@@ -1252,6 +1252,9 @@ class UiHandler(BaseHTTPRequestHandler):
         Rate-limit 1/мин/IP (тот же RateLimiter, отдельный инстанс): попытка
         фиксируется ДО работы — долбёжка таймаутами тоже стоит слота;
         повтор в пределах минуты -> 429 + Retry-After: 60 (U6-T2).
+        Таймаут <= 0 -> 503 немедленно (детерминированный тест-крючок U6-T2:
+        quick_check на пустой/крошечной БД укладывается в < 1000 VM-операций,
+        progress-handler не успевает сработать — потому pre-check обязателен).
         Ответ 200: {checked_at, duration_ms, status: ok|errors, rows[<=50],
         row_count, truncated} — quick_check отдаёт 'ok' или список проблем."""
         if self.server.check_limiter.blocked(ip):
@@ -1259,6 +1262,10 @@ class UiHandler(BaseHTTPRequestHandler):
                        extra=(("Retry-After", "60"),))
             return 429
         self.server.check_limiter.fail(ip)     # попытка фиксируется ДО работы
+        if self.server.check_timeout <= 0:
+            alog("WARN", f"check-db timed out pre-check timeout={self.server.check_timeout}s")
+            self._json(503, {"error": "check timed out"})
+            return 503
         deadline = time.monotonic() + self.server.check_timeout
 
         def _tick():
@@ -1364,6 +1371,7 @@ def main(argv):
     cred_file = config.CRED_FILE
     static_root = config.STATIC_ROOT
     check_timeout = config.CHECK_DB_TIMEOUT   # §5.11 (CLI-оверрайд для тестов)
+    export_max_bytes = config.EXPORT_MAX_BYTES  # §5.9 (CLI-оверрайд для тестов)
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -1379,9 +1387,11 @@ def main(argv):
             static_root = args.pop(0)
         elif a == "--check-timeout" and args:   # U6-T2: тест таймаут-пути
             check_timeout = float(args.pop(0))
+        elif a == "--export-max-bytes" and args:  # U6-T1: 413-путь с малым лимитом
+            export_max_bytes = int(args.pop(0))
         else:
             print("usage: server.py [--db PATH] [--port N] [--bind IP] [--cred FILE] "
-                  "[--static DIR] [--check-timeout SEC]", file=sys.stderr)
+                  "[--static DIR] [--check-timeout SEC] [--export-max-bytes N]", file=sys.stderr)
             return 2
 
     creds = load_creds(cred_file)
@@ -1431,6 +1441,7 @@ def main(argv):
         httpd.limiter = limiter
         httpd.check_limiter = check_limiter
         httpd.check_timeout = check_timeout
+        httpd.export_max_bytes = export_max_bytes
         httpd.wcols = wcols
         httpd.now_cols = now_cols
         httpd.hourly_fields = hourly_fields
