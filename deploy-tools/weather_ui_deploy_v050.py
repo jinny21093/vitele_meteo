@@ -9,9 +9,13 @@ weather_ui_deploy_v041.py: урок Х-1 — синк ВСЕГО кода, не 
   0. git pull --ff-only клон репо НА VM (/home/auditbot/vitele_meteo),
      HEAD клона == локальному HEAD (иначе: сначала запушить)
   1. манифест ВСЕГО кода: ui/** (server.py, config.py, static/* — вкл.
-     settings.html/page-settings.js/style.css), stage-a/*.py, stage-b/*.py;
-     md5-отчёт по КАЖДОМУ файлу (repo vs runtime), бэкап расходящихся в
-     .backup-<date>-v050, cp только расходящихся
+     settings.html/page-settings.js/style.css), stage-a/*.py (КРОМЕ
+     stage-a/legacy/ — архив реликтов, в runtime не синкается),
+     stage-b/*.py; md5-отчёт по КАЖДОМУ файлу (repo vs runtime), бэкап
+     расходящихся в .backup-<date>-v050, cp только расходящихся
+  1b. правило ревьюера (финал U6): «в runtime нет .py вне манифеста» —
+     find по DASH/UIDIR (maxdepth 1) минус basename-манифест; strays ->
+     WARN (как дрейф G12), НЕ блокирует деплой
   2. py_compile всех синкнутых .py
   3. рестарт ТОЛЬКО затронутых сервисов (weather-ui при ui/**; weather-api
      при weather_api.py/weather_zam.py)
@@ -34,6 +38,10 @@ weather_ui_deploy_v041.py: урок Х-1 — синк ВСЕГО кода, не 
 
 Отличия от v041: EXPECT_SERVER_VERSION/UI 0.5.0 (было 0.4.1), BACKUP-путь
 v050, смоук дополнен U6-проверками, добавлен шаг 5 verify unit-test.
+Финал U6 (вердикт ревьюера): манифест исключает stage-a/legacy/ (реликт
+weather_poller_v1_pre_git.py НЕ возвращается в runtime), шаг 1b — WARN
+«.py вне манифеста в runtime», смоук сверяет серверный счётчик статики
+files=16 (v030=14 + settings.html + page-settings.js).
 
 Креды только из /home/auditbot/.weather-ui-credentials, в лог не печатаются.
 Транскрипт -> state/weather_ui_deploy_v050.txt.
@@ -107,7 +115,8 @@ def main():
         f"echo FLAT_JUNK_CLEANED")
     files = run(
         f"cd {REPO} && (git ls-files ui/ | grep -v '^ui/static/' ; "
-        f"git ls-files 'ui/static/' ; git ls-files 'stage-a/*.py' ; "
+        f"git ls-files 'ui/static/' ; git ls-files 'stage-a/*.py' "
+        f"| grep -v '^stage-a/legacy/' ; "
         f"git ls-files 'stage-b/*.py') | sort", timeout=30)
     manifest = [ln.strip() for ln in files.splitlines() if ln.strip()]
 
@@ -174,6 +183,25 @@ def main():
     if not synced:
         print("[i] расхождений нет — синк не потребовался, рестартов не будет")
 
+    # ---------- шаг 1b: в runtime нет .py вне манифеста (WARN, как G12) ----------
+    print("\n### 1b. правило ревьюера: в runtime нет .py вне манифеста (WARN)")
+    expect_py = {os.path.basename(r) for r in manifest if r.endswith(".py")}
+    _, o_stray, _ = run_tr(
+        inner, f"find {DASH} {UIDIR} -maxdepth 1 -name '*.py' -printf '%f\\n' "
+               f"2>/dev/null | sort", timeout=30)
+    runtime_py = {ln.strip() for ln in o_stray.splitlines() if ln.strip()}
+    strays = sorted(runtime_py - expect_py)
+    out_all.append("[1b] runtime .py вне манифеста: "
+                   + (", ".join(strays) if strays else "(нет)"))
+    if strays:
+        for s in strays:
+            print(f" WARN  V???.py вне манифеста в runtime: {s} "
+                  f"(правило «в runtime нет .py вне манифеста»; "
+                  f"не блокирует деплой — как дрейф G12)")
+    else:
+        print("  OK      runtime .py полностью покрыт манифестом "
+              f"({len(expect_py)} .py)")
+
     # ---------- шаг 2: py_compile ----------
     print("\n### 2. py_compile изменённых .py")
     pys = [r for r in synced if r.endswith(".py")]
@@ -197,6 +225,11 @@ def main():
         run("sudo -n systemctl restart weather-ui && sleep 1.5 && "
             "systemctl is-active weather-ui", must="active",
             fail="weather-ui не поднялся после рестарта")
+        # финал U6: серверный счётчик статики — files=16
+        # (v030=14; +settings.html-заглушка -> 15 в v040; +page-settings.js -> 16)
+        run("sudo -n journalctl -u weather-ui -n 30 --no-pager | "
+            "grep 'static loaded files' | tail -1", must="files=16",
+            fail="сервер загрузил НЕ 16 статических файлов (ожидался files=16)")
     if not synced:
         print("[i] рестарты не нужны (код не менялся)")
     run("systemctl is-active weather-ui weather-api; true")
