@@ -283,6 +283,7 @@ def main():
     print(f"[+] verify_stage_ui.sh -> {VERIFY_TMP}")
     out_all.append(f"[+] {VERIFY_SRC} -> {VERIFY_TMP}")
     _, o, _ = run_tr(inner,
+                     f"REPO_DIR={REPO} "                # verify в /tmp: SCRIPT_DIR/.. = / — без REPO_DIR V008 cp ui/ падает (баг первого прогона)
                      f"EXPECT_SERVER_VERSION={EXPECT_SERVER_VERSION} "
                      f"EXPECT_UI_VERSION={EXPECT_UI_VERSION} "
                      f"bash {VERIFY_TMP} unit-test 2>&1", timeout=900)
