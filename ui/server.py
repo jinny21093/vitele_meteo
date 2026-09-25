@@ -417,15 +417,15 @@ def load_static(root):
                 "ctype": ctype, "raw": raw, "gz": gz,
                 "etag": '"' + hashlib.sha256(raw).hexdigest()[:32] + '"',
             }
-    # M-4 (ревью r1-r3): required покрывает экраны U0-U5 (U5, v0.4.0:
-    # +forecast). Заглушка U6 (settings.html) сознательно НЕ в списке — её
-    # отсутствие старт валилить не должно.
+    # M-4 (ревью r1-r3): required покрывает экраны U0-U6 (U6, v0.5.0:
+    # +settings.html/page-settings.js — заглушка стала настоящим экраном).
     for required in ("/static/index.html", "/static/style.css", "/static/app.js",
                      "/static/vendor/chart.min.js", "/static/page-now.js",
                      "/static/day.html", "/static/month.html",
                      "/static/page-day.js", "/static/page-month.js",
                      "/static/events.html", "/static/page-events.js",
                      "/static/forecast.html", "/static/page-forecast.js",
+                     "/static/settings.html", "/static/page-settings.js",
                      "/static/icons/favicon.svg"):
         if required not in cache:
             alog("ERROR", f"startup: required static file missing file={required}")

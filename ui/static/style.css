@@ -405,3 +405,35 @@ a { color: var(--accent); text-decoration: none; }
   .charts-page { grid-template-columns: 1fr; padding: 10px; }
   .chart-wrap { height: 200px; }
 }
+
+/* --- U6 «Настройки» (ТЗ v1.2.8 §4.6): форма экспорта, модалка check-db,
+   бейджи статусов collector_log/db_health. Без inline-стилей (CSP §0.6). --- */
+.set-form label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .92em; color: var(--muted);
+}
+.set-form input, .set-form select {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; font: inherit;
+}
+.set-form .set-fields { flex-basis: 100%; }
+.set-fields input { width: min(480px, 100%); }
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: .85em; border: 1px solid var(--border);
+}
+.badge.ok  { color: var(--ok);  border-color: var(--ok); }
+.badge.warn{ color: var(--warn);border-color: var(--warn); }
+.badge.bad { color: var(--bad); border-color: var(--bad); }
+.modal-wrap {
+  position: fixed; inset: 0; background: rgba(16, 24, 40, .45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal {
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 20px;
+  max-width: 560px; width: calc(100% - 32px); max-height: 80vh; overflow: auto;
+}
+.modal h3 { margin: 0 0 8px; }

@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/icons/favicon.svg" type="image/svg+xml">
 <script src="/static/app.js" defer></script>
+<script src="/static/page-settings.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -25,14 +26,81 @@
 
 <div id="banner" class="banner hidden" role="alert"></div>
 
-<main class="placeholder-wrap">
-  <section class="card placeholder">
-    <h2>Настройки</h2>
-    <p>Экран появится в юните U6 (ТЗ weather-ui-spec.md §11).</p>
-    <p class="muted">Сейчас реализованы U0–U3: каркас (auth, health) и экраны «Сейчас», «Сутки», «Месяц».</p>
+<main class="charts-page">
+  <!-- U6-C2: экспорт CSV. Пробник limit=1 (HEAD -> 501, §3) -> 413 -> баннер;
+       200 -> window.location на полный URL. -->
+  <section class="chart-card" id="set-export">
+    <h2>Экспорт CSV</h2>
+    <div class="controls set-form" role="group" aria-label="Параметры экспорта">
+      <label>с <input type="date" id="set-from"></label>
+      <label>по <input type="date" id="set-to"></label>
+      <label>таблица
+        <select id="set-type">
+          <option value="history">history (сырые замеры, 1 мин)</option>
+          <option value="hourly">hourly (часовые агрегаты)</option>
+          <option value="daily">daily (суточные агрегаты)</option>
+        </select>
+      </label>
+      <label>разделитель
+        <select id="set-sep">
+          <option value=";">; (Excel)</option>
+          <option value=",">, (RFC 4180)</option>
+        </select>
+      </label>
+      <label class="set-fields">поля (через запятую, пусто — все)
+        <input type="text" id="set-fields" placeholder="ts,outdoor_temp_c,&hellip;">
+      </label>
+      <button id="set-export-btn" class="btn" type="button">Экспорт CSV</button>
+    </div>
+    <p class="muted">Окно до 366 дней; выгрузка крупнее 300&nbsp;МБ отклоняется
+      (413, число строк — в сообщении). UTF-8 без BOM, первая строка — заголовок.</p>
+  </section>
+
+  <section class="chart-card" id="set-db">
+    <h2>База данных</h2>
+    <p id="set-dbh"><span class="muted">загрузка&hellip;</span></p>
+    <!-- U6-C3: подтверждение + результат в модалке (§4.6 дословно). -->
+    <div class="controls">
+      <button id="set-check-btn" class="btn" type="button">Проверить БД</button>
+      <span class="muted">PRAGMA quick_check — может занять несколько секунд</span>
+    </div>
+  </section>
+
+  <section class="chart-card" id="set-params">
+    <h2>Параметры станции (wmeta)</h2>
+    <div id="set-wmeta"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+
+  <section class="chart-card" id="set-schema">
+    <h2>Схема БД</h2>
+    <div id="set-mig"><span class="muted">загрузка&hellip;</span></div>
+  </section>
+
+  <section class="chart-card" id="set-log">
+    <h2>Журнал коллектора (последние 20)</h2>
+    <div class="table-wrap" id="set-clog">
+      <table class="stat-table">
+        <thead><tr><th>Время</th><th>Статус</th><th>Задержка, мс</th><th>Байт</th><th>Ошибка</th></tr></thead>
+        <tbody id="set-clog-body"><tr><td colspan="5" class="muted">загрузка&hellip;</td></tr></tbody>
+      </table>
+    </div>
   </section>
 </main>
 
-<footer class="foot"><span id="last-update" class="muted"></span></footer>
+<!-- модалка результата check-db (CSP: без inline-обработчиков) -->
+<div id="set-modal" class="modal-wrap hidden" role="dialog" aria-modal="true" aria-labelledby="set-modal-title">
+  <div class="modal">
+    <h3 id="set-modal-title">Проверка БД</h3>
+    <div id="set-modal-body"><span class="muted">выполняется&hellip;</span></div>
+    <div class="controls">
+      <button id="set-modal-close" class="btn" type="button">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<footer class="foot">
+  <button id="refresh" class="btn" type="button">Обновить</button>
+  <span id="last-update" class="muted"></span>
+</footer>
 </body>
 </html>
