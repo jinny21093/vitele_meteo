@@ -476,7 +476,7 @@ if [[ "$MODE" == "deploy" ]]; then
   drift stage-b/weather_aggregator.py "$DASHDIR/weather_aggregator.py"      1fb40948b5d2713e681e3c7970333f31
   drift stage-b/weather_api.py       "$DASHDIR/weather_api.py"              2ebcef7dd11b9fdd05628ffe64a66633
   drift stage-b/weather_zam.py       "$DASHDIR/weather_zam.py"              f12fe675848094db37b9a52cf1b79026
-  drift ui/server.py                 "$DASHDIR/ui/server.py"                f3e59efe95dcb3f62b9c60383e66767c
+  drift ui/server.py                 "$DASHDIR/ui/server.py"                95acbc040501694bbfdb5575b7ca070e
   drift ui/config.py                 "$DASHDIR/ui/config.py"                0bcfbe1faa563bbd4f65725071cb7b86
   drift ui/static/app.js             "$DASHDIR/ui/static/app.js"            7c6adcc7edc00e35f3a7a9ecfbb294ae
   drift ui/static/page-forecast.js   "$DASHDIR/ui/static/page-forecast.js"  23a73e00e330b55c3711772abae0401d
