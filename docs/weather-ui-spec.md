@@ -3,11 +3,21 @@
 **Объект:** визуальный дашборд поверх `weather.db`  
 **Хост:** Debian 12 VM (Hyper-V), x86\_64, 1 vCPU, ~2.6 ГБ RAM, ~7.4 ГБ свободно  
 **Сеть:** LAN-only, порт 8089 (биндинг на LAN-интерфейс)  
-**Версия документа:** 1.2.7  
+**Версия документа:** 1.2.8  
 **Связанные документы:** `weather-roadmap.md` (этапы A/B/C), `weatherstation.md`, `weatherboard_v2.1_analitic.md`  
 **Условие внедрения:** после успешного этапа B (есть `v_hourly`, `v_daily`, `forecast`, стабильный `current` — последняя строка `weather`, патч v1.2.3 §5.1)  
 **История:** изменения v1.0→v1.1, v1.1→v1.2, v1.2→v1.2.1 — в архивных версиях документа.
 
+## Changelog v1.2.7 → v1.2.8
+
+| # | Изменение |
+| --- | --- |
+| 1 | §4.6: экран «Настройки» реализован (U6, v0.5.0) — карточки wmeta (whitelist фильтруется НА СЕРВЕРЕ, §5.10), версия схемы, журнал коллектора (20 строк), db_health со старением 26 ч («Проверка БД: не проводилась (N дн назад)» — жёлтым); экспорт CSV с пробником (C2 — лёгкий GET с `limit=1`, HEAD невозможен — 501 §3); кнопка «Проверить БД» — подтверждение + модалка; polling 5 мин |
+| 2 | §5.9 переписан под реализацию U6 — `type=history\|hourly\|daily` (weather/v_hourly/v_daily), `fields=` по PRAGMA-whitelist, `separator=;\|,` (дефолт `;`), окно ≤ 366 дней (было ≤ 31 — наследие одно-табличного export v1.2.2), pre-COUNT → оценка байт (строки × поля × 10) > 300 МБ → **413** + `X-Export-Rows` ДО первого байта CSV (было count > 100 000), chunked без Content-Length, CSV-injection-гвард для TEXT-колонок (battery_raw, wind_dir_mode ×2), BOM не пишется (параметр `?bom` отменён — согласовано A10/U8), `filename="weather-<type>-<from>-<to>.csv"`, `limit=` — опциональный LIMIT после pre-COUNT (пробник) |
+| 3 | §5.10 (новый): GET /api/settings — конверт /api/meta с серверной фильтрацией wmeta по whitelist (units, tz, tz_offset_seconds, gdd_tbase_c, ok_total, err_total, last_ok, schema_version); /api/meta не изменён (контракт §5.7) |
+| 4 | §5.11 (новый): POST /api/check-db — **ЕДИНСТВЕННЫЙ POST системы** (§3): PRAGMA quick_check на query_only-коннекте (чтение — §0.4 не нарушен), таймаут 60 с (set_progress_handler) → 503 `check timed out`, rate-limit 1/мин/IP → 429 + Retry-After; результат в wmeta НЕ кэшируется (UI не пишет в БД; владелец ключа db_health — этап B, сегодня не пишет никто: weather_aggregator кладёт только last_agg_hourly/daily_epoch) |
+| 5 | §3: зафиксировано POST-исключение — только `/api/check-db` → 200, всё остальное → 405 (Connection: close в любом исходе POST — r5-1 сохранён) |
+| 6 | §8/§13: экспорт — 413 по байтам (не строкам); 10 read-only GET-эндпоинтов + 1 POST |
 ## Changelog v1.2.5 → v1.2.6
 
 | # | Изменение |
@@ -151,7 +161,7 @@ HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Basic realm="Weather", charset="UTF-8"
 Content-Type: text/plain; charset=utf-8
 
--   `do_POST` → 405 c `Connection: close` (исключений нет, UI полностью read-only; тело POST не читается — соединение закрывается). Закрытие — флагом сокета; заголовок `Connection: close` несёт только финальный 405.
+-   `do_POST` → 405 c `Connection: close` (**единственное исключение — POST `/api/check-db`, §5.11, v1.2.8**; UI не пишет в БД — quick_check это чтение, §0.4). Для 405: тело POST не читается — соединение закрывается. Закрытие — флагом сокета; заголовок `Connection: close` несёт только финальный 405. Для check-db тело тоже не ожидается — соединение закрывается в любом исходе (r5-1 сохранён).
 -   **Не-GET/POST методы не поддерживаются** — 501 базового `BaseHTTPRequestHandler` (`do_HEAD` не переопределяется). Uptime Kuma настроен на GET `/api/health` — 501 от базового класса не влияет на мониторинг (v1.2.7, решение согласовано — U7-6).
     
 -   Rate-limit: 10 неудачных/мин/IP, словарь под `threading.Lock()`, затем 429 + `Retry-After: 60`. **При успешной авторизации счётчик неудач для IP сбрасывается.**
@@ -194,9 +204,17 @@ Heatmap дни×часы из `/api/hourly`; календарь осадков 
 
 Zambretti крупно (буква — если строка её несёт; легаси-строки без letter — только текст) + иконка; persistence-таблица (1/3/6 ч); Sager (ночью — плашка «Не применимо (ночь)»). Если прогноз не сформирован — плашка «Прогноз ещё не сформирован (нужно ≥ 3 ч истории)». ΔT/ΔP в таблице — семантика «от базы расчёта» (решение владельца, вариант (б)): база — `issued_values` конверта (показания на `issued_at`, НЕ «сейчас»); подпись под таблицей «Δ = прогноз − расчёт (issued HH:MM)»; база недоступна (`issued_values: null`) → столбцы Δ «—» и подпись «Δ = прогноз − расчёт; база недоступна» (v1.2.6, синхронизация с реализацией U5: горизонты persistence — 1/3/6 ч, 12 ч — только Замбретти, 24 ч отклонён владельцем; иконок в `/static/icons/` нет — Замбретти отображается текстом; свежесть — «рассчитан HH:MM» + возраст, устаревший расчёт — жёлтым; окно опроса — 15 мин — без изменений).
 
-### 4.6. «Настройки» (/settings) — по запросу
+### 4.6. «Настройки» (/settings) — по запросу (polling 5 мин; реализация U6, v0.5.0)
 
-`wmeta` \+ версия схемы + 20 записей `collector_log` + `db_health`: если `updated_at` старше 26 ч — жёлтым «Проверка БД: не проводилась (N дн назад)». Экспорт CSV (новая вкладка). Кнопка «Проверить БД» — `PRAGMA quick_check` по требованию (может занять секунды — предупредить в UI), результат в модалке.
+Данные — **GET /api/settings** (§5.10: wmeta уже отфильтрован СЕРВЕРОМ по whitelist — на клиенте фильтра нет).
+
+-   **Параметры станции (wmeta):** только whitelist-ключи §5.10 (units, tz, tz_offset_seconds, gdd_tbase_c, ok_total, err_total, last_ok, schema_version) с ru-подписями; пути/station_ip/mac на экран НЕ попадают.
+-   **Схема БД:** последняя запись `schema_migrations` (version, applied_at, description); пусто — «миграций нет».
+-   **Журнал коллектора:** 20 записей `collector_log` — таблица: Время (TZ дачи), статус (бейдж ok/ошибка), задержка мс, байт, ошибка (обрезка 80 символов, полная — в title).
+-   **db_health со старением:** `updated_at` старше 26 ч — жёлтым «Проверка БД: не проводилась (N дн назад)»; ключа нет — жёлтым «Проверка БД: не проводилась» (сегодня ключ никто не пишет — владелец этап B); свежий — зелёным с результатом. Результат кнопки «Проверить БД» показывается в карточке до конца сессии (сервер его не кэширует — §5.11).
+-   **Экспорт CSV (карточка):** форма from/to (даты в TZ дачи) / type (history/hourly/daily) / separator (`;` Excel по умолчанию, `,` — опция) / fields (пусто — все поля таблицы). Кнопка: **пробник** — лёгкий GET тех же параметров с `limit=1` (HEAD → 501 §3; сервер применяет limit ПОСЛЕ pre-COUNT — пробник проходит ту же проверку 413): 200 → `window.location` на полный URL (браузер качает сам); 413 → баннер с числом строк из тела; 401/сеть → баннер. Оговорка TOCTOU: между пробником и скачиванием размер теоретически может вырасти — тогда браузер получит 413-JSON (редко; повтор кнопки решает).
+-   **Кнопка «Проверить БД»:** confirm «может занять несколько секунд» → POST /api/check-db (§5.11) → результат в модалке (статус, длительность, список проблем при ошибках); 429 — баннер с Retry-After; 503 `check timed out` — сообщение в модалке.
+
 
 ## 5\. REST API
 
@@ -338,23 +356,47 @@ json
 
 `SELECT 1` + `last_ts`: `{"status": "ok", "db": "ok", "last_ts": ...}` — 200 или 503. **p99 < 10 мс.** Эндпоинт не расширять.
 
-### 5.9. GET /api/export.csv?from=&to=
+### 5.9. GET /api/export.csv?from=&to=&fields=&type=&separator=&limit=  (v1.2.8 — U6-S1)
 
--   Окно ≤ 31 дня.
+-   `type=history|hourly|daily` (дефолт `history`) → сырые таблицы `weather` / `v_hourly` / `v_daily` (ts-колонка окна: `ts` / `hour_epoch` / `day_epoch`). Неизвестный type → 400.
     
--   **Перед началом стриминга — `SELECT COUNT(*)`** по тому же диапазону (быстро по `idx_weather_ts`). Если `count > 100000` → **413 Payload Too Large** с телом `{"error": "too many rows", "count": N, "limit": 100000}` и **без** начала передачи CSV. Это гарантирует детерминированное поведение: либо полный файл, либо честная ошибка до отправки байтов.
+-   Окно ≤ **366 дней** (иначе 400 — гвард общий со всеми эндпоинтами: 400 — про ОКНО, 413 — про РАЗМЕР). v1.2.7 ограничивал export 31 днём — наследие одно-табличного экспорта v1.2.2; год — штатный кейс выгрузки daily/hourly.
     
--   **WHERE для COUNT и SELECT — идентичен** (те же `from`, `to`, без изменений между двумя запросами; окно закрыто сверху, дельта невозможна).
+-   `fields=` — CSV-список по **PRAGMA-whitelist** таблицы типа (дефолт — все колонки в схемном порядке; для `weather` исключены сервисные `id`/`schema_version`, `battery_raw` остаётся). Неизвестное поле → 400. `separator=;|,` (дефолт `;` — Excel), иное → 400. `limit=` — опциональный LIMIT 1..100000 (пробник C2).
     
--   **Колонки CSV:** все поля таблицы `weather` (raw + L1 + L2-short) **в порядке схемы**, первая — `ts`. Список берётся из `PRAGMA table_info(weather)` на старте.
+-   **Pre-COUNT ДО стриминга:** `BEGIN` (единый WAL-снапшот COUNT+SELECT) → `SELECT COUNT(*)` по ТОМУ ЖЕ WHERE → оценка байт = строки × поля × 10 (`EXPORT_AVG_FIELD_BYTES`). Оценка > 300 МБ → **413 Content Too Large** + заголовок `X-Export-Rows: <N>` (фактическое число строк) + JSON-тело `{error, rows, estimated_bytes, limit_bytes}` и **без** первого байта CSV.
     
--   Стриминг `Transfer-Encoding: chunked`, без `Content-Length` (исключение из лимита 10 МБ). `csv.writer` — прямо в сокет, `lineterminator="\r\n"` (RFC 4180, Excel-совместимо).
+-   **Стриминг:** `Transfer-Encoding: chunked`, **без** `Content-Length` (исключение из лимита 10 МБ), `Connection: close`; батчи по 500 строк (`fetchmany`), `csv.writer` с `lineterminator="\r\n"` (RFC 4180, quoting QUOTE_MINIMAL). Коннект живёт от db_open до конца/обрыва стрима — семафорный слот занят ровно это время (единственный long-lived обработчик); зависший клиент рвётся HANDLER_TIMEOUT=10 (per-op inactivity). Ошибка БД ПОСЛЕ заголовков — честный 503 невозможен: терминальный chunk (файл обрезается) + ERROR в лог.
     
--   `Content-Type: text/csv; charset=utf-8`, `Content-Disposition: attachment; filename="weather-YYYY-MM-DD.csv"`.
+-   **CSV-гигиена:** NULL → пустая ячейка; **BOM не пишется никогда** (UTF-8 без BOM — согласовано A10/U8; параметр `?bom` из v1.2.7 ОТМЕНЁН); `Cache-Control: no-store`; `Content-Type: text/csv; charset=utf-8`; `Content-Disposition: attachment; filename="weather-<type>-<from>-<to>.csv"` (даты UTC YYYY-MM-DD).
     
--   **BOM (UTF-8, `\xEF\xBB\xBF`) — опционально** (некоторые версии Excel требуют для корректной кодировки). Решение — параметр `?bom=1` (по умолчанию без BOM).
+-   **CSV-injection:** значения колонок с decltype **TEXT** (по PRAGMA на старте; фактически `weather.battery_raw`, `v_hourly.wind_dir_mode`, `v_daily.wind_dir_mode`) при первом символе `=` `+` `-` `@` префиксуются апострофом; числовые колонки не трогаются (минус температуры легитимен).
     
+-   `PRAGMA table_info` всех трёх таблиц читается **на старте** (whitelist по §0.7); имена таблиц/колонок WHERE — константы модуля.
 
+### 5.10. GET /api/settings  (v1.2.8 — U6-S2)
+
+Конверт структурно равен `/api/meta` (§5.7), но `wmeta` **фильтруется на СЕРВЕРЕ** по whitelist:
+
+```
+WMETA_VISIBLE = units, tz, tz_offset_seconds, gdd_tbase_c, ok_total, err_total, last_ok, schema_version
+```
+
+Пути/station_ip/mac на экран Настроек не попадают (§4.6). `/api/meta` остаётся без фильтра — контракт §5.7 («wmeta объект» целиком) документирован и используется всеми страницами (app.js берёт оттуда TZ): фильтрация /api/meta была бы ломающим изменением. Ответ: `{wmeta (filtered), schema_migrations (последняя | null), collector_log (20, как §5.7), db_health (parsed | null)}`. Деградация по таблицам — как в /api/meta (m-5).
+
+### 5.11. POST /api/check-db  (v1.2.8 — U6-S3; ЕДИНСТВЕННЫЙ POST системы)
+
+-   **PRAGMA quick_check** на query_only-коннекте (§0.4 не нарушен — это чтение). Тело POST отсутствует; соединение закрывается в любом исходе (r5-1).
+    
+-   **Таймаут 60 с:** statement-timeout в sqlite3 нет → `set_progress_handler` (шаг 1000 VM-операций, дедлайн по time.monotonic) → прерывание → **503** `{"error": "check timed out"}`. CLI `--check-timeout` — тест-крючок (0 → детерминированный 503: на пустой БД quick_check укладывается в < 1000 операций).
+    
+-   **Rate-limit 1/мин/IP** (тот же RateLimiter, отдельный инстанс): попытка фиксируется ДО работы (таймаут тоже стоит слота) → повтор в пределах минуты **429** + `Retry-After: 60`.
+    
+-   **Результат НЕ кэшируется в wmeta** — кэширование было бы ЗАПИСЬЮ из UI (§0.4). Сверка U6: `db_health` не пишет никто (этап B кладёт только `last_agg_hourly_epoch`/`last_agg_daily_epoch`, weather_aggregator.py:376/393); владелец ключа — этап B, когда добавит. POST отвечает своим результатом синхронно: `{checked_at, duration_ms, status: ok|errors, rows[≤50], row_count, truncated}`.
+    
+-   Auth — как везде; 405 для всех остальных POST-путей сохранён.
+
+## 6. Клиентский JS
 ## 6\. Клиентский JS
 
 -   `app.js`: `apiFetch` (401/429/5xx — retry + баннер; отличает «Инициализация…» по телу 503), форматтеры, `timeAgo`, `colorFor*`.
@@ -398,7 +440,8 @@ function fmtDate(e)    { return fmtTs(e).slice(0,10); }
 | `/api/*` 5xx | Баннер, повтор через 30 с |
 | БД недоступна | 503 везде, страница-заглушка |
 | Rate-limit | 429 + Retry-After, баннер |
-| `export.csv` \> 100k строк | 413 до начала передачи, баннер «сузьте окно» |
+| `export.csv` — оценка > 300 МБ | 413 до начала передачи (`X-Export-Rows`) + баннер «сузьте окно» (пробник `limit=1` ловит это ДО скачивания) |
+| `check-db` дольше 60 с | 503 `check timed out` в модалке; повтор — не раньше чем через минуту (429) |
 | Битый `context` в `events` | `null` в ответе + WARN в лог |
 | `SQLITE_READONLY_RECOVERY` | Не должен встречаться (rw-open); если поймали — ERROR в лог |
 
@@ -446,7 +489,12 @@ curl -sf -u weather:"$UI\_PASS" "$B/api/daily?from\=$((NOW\-30\*86400))&to\=$NOW
 \# +: chart.min.js — Cache-Control + ETag + gzip при Accept-Encoding
 \# +: nosniff на всех ответах; CSP на /
 \# +: ss -tlnp | grep 8089 — только LAN-IP
-\# +: Kuma-монитор /api/health — up
+# +: Kuma-монитор /api/health — up
+#
+# U6 (v1.2.8): группы G14 (GET /api/settings + POST /api/check-db) и G15
+# (export.csv 413-путь/пробник/CSV-injection/empty-DB) с ВЕРСИОННЫМ ГЕЙТОМ:
+# активны при Server >= 0.5.0, иначе SKIP+WARN (деплой U6 — после приёмки).
+# deploy-режим — только GET: POST check-db на прод не шлётся.
 
 ## 12\. Открытые вопросы
 
@@ -459,4 +507,4 @@ curl -sf -u weather:"$UI\_PASS" "$B/api/daily?from\=$((NOW\-30\*86400))&to\=$NOW
 
 ## 13\. Резюме
 
-Stdlib-Python + vanilla JS + Chart.js; **9 read-only эндпоинтов** (`query_only`, rw-open per-request ради WAL-recovery); TZ дачи на всех экранах; raw-история ≤ 7 д + `/api/hourly` ≤ 90 д; стриминговый CSV с предварительным COUNT; LAN-only 8089 + Basic auth с корректным `WWW-Authenticate`; все граничные состояния (пустой `current`, пустой `forecast`, переполнение `events`, перегрузка соединений, битый `context`) специфицированы; graceful shutdown; ~1600 строк Python + ~2000 JS/CSS/HTML.
+Stdlib-Python + vanilla JS + Chart.js; **10 read-only GET-эндпоинтов + единственный POST /api/check-db** (`query_only`, rw-open per-request ради WAL-recovery); TZ дачи на всех экранах; raw-история ≤ 7 д + `/api/hourly` ≤ 90 д; стриминговый CSV с предварительным COUNT; LAN-only 8089 + Basic auth с корректным `WWW-Authenticate`; все граничные состояния (пустой `current`, пустой `forecast`, переполнение `events`, перегрузка соединений, битый `context`) специфицированы; graceful shutdown; ~1600 строк Python + ~2000 JS/CSS/HTML.
