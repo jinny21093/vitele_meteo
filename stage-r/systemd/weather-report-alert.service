@@ -1,0 +1,10 @@
+[Unit]
+Description=Weather report failure alert (U8 OnFailure → Kuma push down, механизм M6)
+
+[Service]
+Type=oneshot
+User=auditbot
+# Endpoint — kuma_push.conf (строка backup_url=), тот же механизм, что в
+# weather_backup.sh (M6). URL с токеном мониторинга не логируется и не
+# попадает в вывод; push best-effort (|| true).
+ExecStart=/bin/bash -c 'URL=$(grep -m1 "^backup_url=" /home/auditbot/weather-dash/kuma_push.conf 2>/dev/null | cut -d= -f2-); if [ -n "$URL" ]; then curl -s -G --max-time 5 "$URL" --data-urlencode "status=down" --data-urlencode "msg=weather-report service failed" >/dev/null 2>&1 || true; fi'

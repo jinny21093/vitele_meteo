@@ -1,0 +1,10 @@
+[Unit]
+Description=Weather daily AI report at 06:50 MSK (U8, после снапшота 06:40)
+
+[Timer]
+OnCalendar=*-*-* 06:50:00 Europe/Moscow
+Persistent=true
+Unit=weather-report.service
+
+[Install]
+WantedBy=timers.target

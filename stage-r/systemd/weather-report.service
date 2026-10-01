@@ -1,0 +1,17 @@
+[Unit]
+Description=Weather daily AI report (U8: SQL facts + LLM narrative + Telegram)
+After=network-online.target
+Wants=network-online.target
+OnFailure=weather-report-alert.service
+
+[Service]
+Type=oneshot
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+EnvironmentFile=/home/auditbot/weather-dash/report.env
+Nice=19
+TimeoutStartSec=300
+ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/weather_report.py
+
+[Install]
+WantedBy=multi-user.target
