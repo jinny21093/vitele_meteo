@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.0.3).
+"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.1.0).
+
+v1.1.0 (U8.1, регенерация — второй пункт мини-задания U8.1):
+  • CLI --regenerate-last / --regenerate DAY_EPOCH: повтор LLM-шага для
+    СУЩЕСТВУЮЩЕЙ строки reports: llm_* → NULL, LLM по канону §2 (те же
+    проверки §2.5 + чекер §7.1), доставка §3.3 со свежим кругом TTL
+    (симметрично resend_reset). Новых строк не создаёт; факты не
+    пересобираются; пустой день (n_samples=0) LLM не вызывает (§4.4).
 
 v1.0.3 (U8.1, промпт-фикс — план А ревью по наблюдению live-прогонов:
 glm-4.7-flash при t=0.3 склонен считать модуль отрицательной дельты):
@@ -50,7 +57,9 @@ empty_response; finish_reason="length" → WARN и принять; ∉ {stop,len
 
 Идемпотентность (§4.4): idempotency_key = "{day_epoch}:{chat_id}" UNIQUE;
 rerun-правила по llm_text/llm_error. CLI (§5.3): --dry-run (без LLM и
-доставки, exit 0), --resend-last (нет строк → exit 1), --resend DAY_EPOCH.
+доставки, exit 0), --resend-last (нет строк → exit 1), --resend DAY_EPOCH,
+--regenerate-last / --regenerate DAY_EPOCH (U8.1: повтор LLM-шага
+существующей строки, llm_* → NULL, новых строк не создаёт).
 
 Секреты (§6.2): только env (EnvironmentFile юнита) или файл по
 LLM_SECRETS_FILE (600, KEY=VALUE); env приоритетен. В логи/argv/git — никогда.
@@ -67,7 +76,7 @@ import time
 import urllib.error
 import urllib.request
 
-WEATHER_REPORT_VERSION = "1.0.3"
+WEATHER_REPORT_VERSION = "1.1.0"
 DEFAULT_DB = "/home/auditbot/weather-dash/weather.db"
 LOCK_PATH = "/var/lock/weather-report.lock"
 LOCK_TIMEOUT_S = 150          # §4.2: блокирующий flock с таймаутом 150с
@@ -963,6 +972,62 @@ def run_resend_last(con, cfg):
     return 0
 
 
+def regenerate_reset(con, rid):
+    """U8.1 --regenerate: сброс LLM-вердиктов строки перед повтором:
+    llm_text/llm_model/llm_tokens_in/llm_tokens_out/llm_error → NULL;
+    доставка — свежий круг TTL (симметрично resend_reset: без сброса
+    attempts ручная регенерация sent-строки с attempts=3 при неудаче
+    доставки мгновенно получила бы failed + ложный Kuma-push)."""
+    con.execute("BEGIN IMMEDIATE")
+    con.execute("UPDATE reports SET llm_text=NULL, llm_model=NULL, "
+                "llm_tokens_in=NULL, llm_tokens_out=NULL, llm_error=NULL, "
+                "delivery_status='pending', delivery_attempts=0 WHERE id=?",
+                (rid,))
+    con.execute("COMMIT")
+
+
+def run_regenerate(con, cfg, row):
+    """Общий хвост --regenerate*: сброс llm_* → повтор LLM по канону §2
+    (message_for_row на NULL/NULL-строке) + чекер §7.1 + доставка §3.3.
+    Строка УЖЕ существует — INSERT не выполняется (новых строк нет)."""
+    regenerate_reset(con, row["id"])
+    row = refetch(con, row["id"])
+    msgs, upd = message_for_row(con, row, cfg)
+    if upd:
+        apply_llm_update(con, row["id"], upd)
+        row = refetch(con, row["id"])
+    deliver(con, row, cfg, msgs)
+    return 0
+
+
+def run_regenerate_last(con, cfg):
+    """§5.3 U8.1 --regenerate-last: повтор LLM-шага последней строки по
+    day_epoch (любой статус); нет строк → exit 1; новых строк не создаёт."""
+    row = con.execute("SELECT * FROM reports ORDER BY day_epoch DESC, id DESC "
+                      "LIMIT 1").fetchone()
+    if row is None:
+        log("нет строк в reports — exit 1 (m-3)")
+        return 1
+    log(f"--regenerate-last: строка id={row['id']}, day={row['day_epoch']} "
+        f"({row['delivery_status']}, llm_error={row['llm_error']}) — "
+        f"повтор LLM-шага")
+    return run_regenerate(con, cfg, row)
+
+
+def run_regenerate_day(con, cfg, day_epoch):
+    """§5.3 U8.1 --regenerate <day_epoch>: повтор LLM-шага строки конкретного
+    дня; строки нет → exit 1; новых строк не создаёт."""
+    row = con.execute("SELECT * FROM reports WHERE day_epoch=? ORDER BY id DESC "
+                      "LIMIT 1", (day_epoch,)).fetchone()
+    if row is None:
+        log(f"ERROR строки reports для day_epoch={day_epoch} нет — exit 1")
+        return 1
+    log(f"--regenerate day_epoch={day_epoch}: строка id={row['id']} "
+        f"({row['delivery_status']}, llm_error={row['llm_error']}) — "
+        f"повтор LLM-шага")
+    return run_regenerate(con, cfg, row)
+
+
 def run_dry(con, now):
     """§5.3 m-4: --dry-run — без LLM и доставки; печатает facts JSON +
     заполненный шаблон; exit 0. Только чтение (mode=ro, без lock/записей)."""
@@ -992,11 +1057,19 @@ def main(argv=None):
                    help="переотправить последнюю строку (нет строк → exit 1)")
     p.add_argument("--resend", type=int, metavar="DAY_EPOCH",
                    help="переотправить конкретный день")
+    p.add_argument("--regenerate-last", action="store_true",
+                   help="повторить LLM-шаг последней строки (U8.1: llm_* → "
+                        "NULL, новых строк не создаёт)")
+    p.add_argument("--regenerate", type=int, metavar="DAY_EPOCH",
+                   help="повторить LLM-шаг строки конкретного дня (U8.1)")
     p.add_argument("--db", default=os.environ.get("WEATHER_REPORT_DB") or DEFAULT_DB,
                    help=argparse.SUPPRESS)  # тестовые стенды; прод — дефолт
     args = p.parse_args(argv)
-    if args.resend_last and args.resend is not None:
-        print("флаги --resend-last и --resend взаимоисключающие", file=sys.stderr)
+    chosen = [args.resend_last, args.resend is not None,
+              args.regenerate_last, args.regenerate is not None]
+    if sum(bool(x) for x in chosen) > 1:
+        print("флаги --resend-last/--resend/--regenerate-last/--regenerate "
+              "взаимоисключающие", file=sys.stderr)
         return 2
 
     if args.dry_run:
@@ -1027,6 +1100,10 @@ def main(argv=None):
             return run_resend_last(con, cfg)
         if args.resend is not None:
             return run_resend_day(con, cfg, args.resend)
+        if args.regenerate_last:
+            return run_regenerate_last(con, cfg)
+        if args.regenerate is not None:
+            return run_regenerate_day(con, cfg, args.regenerate)
         # §4.3 шаг 4: досылка pending_retry (чужих дней), затем генерация за D
         resend_pending(con, cfg, exclude_day=d)
         return run_generation(con, cfg, d, now)

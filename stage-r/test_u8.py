@@ -671,6 +671,63 @@ class U8ScenarioTests(U8Base):
         self.assertEqual(stats(TG.port)["bodies"][1]["body"]["text"],
                          row["llm_text"], "нарратив доставлен владельцу плейном")
 
+    def test_27_regenerate_poisoned_to_clean(self):
+        # U8.1: отравленная строка (invalid_numbers) → --regenerate-last →
+        # чистый нарратив; строка ТА ЖЕ (новых нет), доставка отправлена
+        control(LLM.port, {"target": "llm", "content":
+                "Днём было 12.9 °C, ветер до 4.4 м/с."})  # числа ∉ фактов
+        p = self.gen()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        row = self.rows()[0]
+        self.assertEqual(row["llm_error"], "invalid_numbers")
+        self.assertIsNone(row["llm_text"])
+        self.assertEqual(row["delivery_attempts"], 1)
+        rid = row["id"]
+        # регенерация: чистый ответ мока → LLM повторён по канону
+        control(LLM.port, {"action": "reset"})
+        control(TG.port, {"action": "reset"})
+        p = run_report(["--regenerate-last"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        rows = self.rows()
+        self.assertEqual(len(rows), 1, "--regenerate не создаёт строку")
+        row = rows[0]
+        self.assertEqual(row["id"], rid, "обновлена та же строка")
+        self.assertIsNone(row["llm_error"], "вердикт сброшен и не вернулся")
+        self.assertEqual(row["llm_text"],
+                         "Днём воздух прогрелся до 12.1 °C, минимальная "
+                         "температура опустилась до 3.8 °C. Осадков "
+                         "не зафиксировано: 0.0 мм. Ветер к вечеру "
+                         "усиливался до 5.8 м/с при среднем 1.4 м/с.")
+        self.assertEqual(row["llm_model"], "glm-4.7-flash")
+        self.assertIsNotNone(row["llm_tokens_in"])
+        self.assertEqual(row["delivery_status"], "sent")
+        self.assertEqual(row["delivery_attempts"], 1, "свежий круг TTL")
+        self.assertEqual(stats(LLM.port)["requests"], 1, "ровно один LLM-вызов")
+        tg = stats(TG.port)
+        self.assertEqual(tg["requests"], 2, "шапка + чистый нарратив")
+        self.assertEqual(tg["bodies"][1]["body"]["text"], row["llm_text"])
+        self.assertIn("--regenerate-last", p.stdout)
+
+    def test_28_regenerate_day_exit_codes_and_exclusivity(self):
+        # U8.1: --regenerate без строки → exit 1; по дню → OK; флаги
+        # взаимоисключающие → exit 2
+        build_db(self.db)
+        p = run_report(["--regenerate", str(D)], self.env)
+        self.assertEqual(p.returncode, 1, "строки reports нет → exit 1")
+        self.gen()
+        tg_before = stats(TG.port)["requests"]
+        p = run_report(["--regenerate", str(D)], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(len(self.rows()), 1, "новых строк нет")
+        self.assertEqual(stats(TG.port)["requests"], tg_before + 2)
+        for flags in (["--regenerate-last", "--resend-last"],
+                      ["--regenerate", str(D), "--resend-last"],
+                      ["--regenerate-last", "--resend", str(D)],
+                      ["--regenerate", str(D), "--regenerate-last"]):
+            p = run_report(flags, self.env)
+            self.assertEqual(p.returncode, 2, f"эксклюзивность: {flags}")
+            self.assertIn("взаимоисключающие", p.stderr)
+
     # --- §7.3 smoke (test_s1…test_s5) ----------------------------------------
     def test_s1_dry_run(self):
         build_db(self.db)
