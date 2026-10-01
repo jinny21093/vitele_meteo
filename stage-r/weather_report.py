@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.0.0).
+"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.0.1).
+
+v1.0.1 (находки первого live-прогона 2026-10-01):
+  • tg_send шлёт User-Agent weather-report/<версия> — CF Bot Fight Mode на
+    workers.dev отвечает 403 (error code 1010) на дефолтный Python-urllib UA;
+  • чекер чисел §7.1: день месяца текстовой датой («30 сентября 2026 года»)
+    — исключение уровня B, иначе естественная дата модели ломает отчёт.
 
 Спека-канон: docs/weather-report-spec.md v1.1.1 (коммит f891a33).
 Числа считает SQL, текст пишет LLM (Z.ai, только бесплатные модели whitelist:
@@ -49,7 +55,7 @@ import time
 import urllib.error
 import urllib.request
 
-WEATHER_REPORT_VERSION = "1.0.0"
+WEATHER_REPORT_VERSION = "1.0.1"
 DEFAULT_DB = "/home/auditbot/weather-dash/weather.db"
 LOCK_PATH = "/var/lock/weather-report.lock"
 LOCK_TIMEOUT_S = 150          # §4.2: блокирующий flock с таймаутом 150с
@@ -367,6 +373,9 @@ _TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _DATE_RE = re.compile(r"\b\d{1,2}\.(?:0[1-9]|1[0-2])(?:\.\d{4})?\b")  # DD.MM[.YYYY]
 _NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _COUNTER_RE = re.compile(r"(?i)\s{0,2}(?:раз|раза|событий|события|событие|дней|дня|день|дням|часов|часа|час)\b")
+# Находка деплоя live (2026-10-01): модель пишет дату словами — «30 сентября
+# 2026 года»; день месяца перед названием месяца — не голое число.
+_MONTH_RE = re.compile(r"(?i)\s{0,2}(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)")
 
 
 def facts_numbers(facts):
@@ -397,8 +406,8 @@ def norm_number(raw):
 
 def check_numbers(text, facts):
     """§7.1: уровень A (число+единица — строго ∈ фактов), уровень B (голые —
-    с исключениями: годы 1900–2100, HH:MM/DD.MM, счётчики, константы спеки).
-    «Около N» — совпало + WARN. -> (ok, warns)."""
+    с исключениями: годы 1900–2100, HH:MM/DD.MM, день месяца словами,
+    счётчики, константы спеки). «Около N» — совпало + WARN. -> (ok, warns)."""
     warns, bad = [], []
     allowed = facts_numbers(facts) | {float(c) for c in TEXT_NUMBER_CONSTS}
 
@@ -422,6 +431,9 @@ def check_numbers(text, facts):
             if val not in allowed:
                 bad.append(f"{m.group(0)} {unit.group(1).strip()}")
         else:     # уровень B: исключения §7.1
+            if (1 <= val <= 31 and "." not in m.group(0) and "," not in m.group(0)
+                    and _MONTH_RE.match(t, m.end())):
+                continue  # день месяца текстовой датой («30 сентября 2026»)
             if 1900 <= val <= 2100 and "." not in m.group(0) and "," not in m.group(0):
                 continue  # год
             if _COUNTER_RE.match(t, m.end()):
@@ -674,9 +686,14 @@ def tg_send(cfg, text, markdown=False):
     if markdown:
         payload["parse_mode"] = "Markdown"
     timeout = float(os.environ.get("TG_TIMEOUT_S") or TG_TIMEOUT_S)
+    # v1.0.1: CF Bot Fight Mode на workers.dev отвечает 403 (error code 1010)
+    # на дефолтный Python-urllib UA (находка деплоя live 2026-10-01);
+    # нейтральный UA подтверждён живым getMe (200 ok=true).
     req = urllib.request.Request(
         url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "weather-report/" + WEATHER_REPORT_VERSION},
+        method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             resp = json.loads(r.read().decode("utf-8"))

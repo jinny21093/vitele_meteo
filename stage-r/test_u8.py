@@ -296,6 +296,19 @@ class TestNumbersUnit(unittest.TestCase):
         self.assertEqual(out["events_total"], 400)
         self.assertLessEqual(self.wr.facts_json_bytes(out), 8192)
 
+    def test_14_textual_date_month_live(self):
+        # находка деплоя live (2026-10-01): модель пишет дату словами —
+        # «30 сентября 2026 года»; день месяца — не голое число (30 ∉ фактов)
+        ok, _ = self.u("30 сентября 2026 года в Москве было 3.8 °C.")
+        self.assertTrue(ok, "день месяца текстовой датой — исключение уровня B")
+
+    def test_15_textual_date_month_unit_still_strict(self):
+        # слово-месяц не ослабляет уровень A: 12,1 °C проверяется как обычно
+        ok, _ = self.u("Похолодание ожидалось 5 сентября, до 12,1 °C.")
+        self.assertTrue(ok)
+        bad, _ = self.u("Похолодание ожидалось 5 сентября, до 12,9 °C.")
+        self.assertFalse(bad, "уровень A при слове-месяце в тексте остаётся строгим")
+
 
 class U8ScenarioTests(U8Base):
 
