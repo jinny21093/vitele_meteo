@@ -309,6 +309,13 @@ class TestNumbersUnit(unittest.TestCase):
         bad, _ = self.u("Похолодание ожидалось 5 сентября, до 12,9 °C.")
         self.assertFalse(bad, "уровень A при слове-месяце в тексте остаётся строгим")
 
+    def test_16_fallback_reason_backticks(self):
+        # находка деплоя live (2026-10-01, прогон 2): `_` enum-значений ломает
+        # legacy-Markdown живого Bot API (400 can't parse entities)
+        msg = self.wr.fallback_message(self.facts, "provider_unreachable")
+        self.assertTrue(msg.endswith("`provider_unreachable`"), msg)
+        self.assertIn("*3.8*", msg, "MAJ-4: жирная шапка сохраняется")
+
 
 class U8ScenarioTests(U8Base):
 
@@ -365,7 +372,7 @@ class U8ScenarioTests(U8Base):
         tg = stats(TG.port)
         self.assertEqual(tg["requests"], 1)
         self.assertTrue(tg["bodies"][0]["body"]["text"].endswith(
-            "Нарратив недоступен: timeout"))
+            "Нарратив недоступен: `timeout`"))
 
     def test_05_wrong_language(self):
         control(LLM.port, {"target": "llm", "content":
@@ -376,7 +383,7 @@ class U8ScenarioTests(U8Base):
         self.assertIsNone(self.rows()[0]["llm_text"])
         self.assertEqual(self.rows()[0]["delivery_status"], "sent")
         tg = stats(TG.port)
-        self.assertIn("Нарратив недоступен: wrong_language",
+        self.assertIn("Нарратив недоступен: `wrong_language`",
                       tg["bodies"][0]["body"]["text"])
 
     def test_06_invalid_numbers(self):
@@ -526,7 +533,7 @@ class U8ScenarioTests(U8Base):
         p = self.gen(d_over={"gust_max": 8.0})
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.rows()[0]["llm_error"], "invalid_numbers")
-        self.assertIn("Нарратив недоступен: invalid_numbers",
+        self.assertIn("Нарратив недоступен: `invalid_numbers`",
                       stats(TG.port)["bodies"][0]["body"]["text"])
 
     def test_21_paid_model_fail_fast(self):
@@ -559,7 +566,7 @@ class U8ScenarioTests(U8Base):
         self.assertIsNone(row["llm_model"])
         self.assertEqual(stats(LLM.port)["requests"], 1, "без retry")
         self.assertEqual(row["delivery_status"], "sent")
-        self.assertIn("Нарратив недоступен: provider_unreachable",
+        self.assertIn("Нарратив недоступен: `provider_unreachable`",
                       stats(TG.port)["bodies"][0]["body"]["text"])
 
     def test_24_http_402_no_retry(self):

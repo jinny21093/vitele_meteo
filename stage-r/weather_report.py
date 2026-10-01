@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.0.1).
+"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.0.2).
+
+v1.0.2 (находки live-прогонов 2026-10-01):
+  • fallback_message: reason enum в code-backticks — живой Bot API парсит
+    Markdown, `_` значений provider_unreachable/provider_5xx без обёртки
+    даёт 400 «can't parse entities» (моки §7.2 парсинг не эмулируют).
 
 v1.0.1 (находки первого live-прогона 2026-10-01):
   • tg_send шлёт User-Agent weather-report/<версия> — CF Bot Fight Mode на
@@ -55,7 +60,7 @@ import time
 import urllib.error
 import urllib.request
 
-WEATHER_REPORT_VERSION = "1.0.1"
+WEATHER_REPORT_VERSION = "1.0.2"
 DEFAULT_DB = "/home/auditbot/weather-dash/weather.db"
 LOCK_PATH = "/var/lock/weather-report.lock"
 LOCK_TIMEOUT_S = 150          # §4.2: блокирующий flock с таймаутом 150с
@@ -661,9 +666,12 @@ def fmt_num(v):
 
 
 def fallback_message(facts, reason):
-    """§3.4: шаблон + reason из enum §3.5 (verbatim-суффикс)."""
+    """§3.4: шаблон + reason из enum §3.5. v1.0.2: reason в code-backticks —
+    живой Bot API парсит Markdown, `_` enum-значений (provider_unreachable /
+    provider_5xx) без обёртки даёт 400 «can't parse entities» (находка
+    деплоя live; моки §7.2 парсинг Markdown не эмулируют)."""
     assert reason in LLM_ERROR_ENUM, reason
-    return header_markdown(facts) + f" Нарратив недоступен: {reason}"
+    return header_markdown(facts) + f" Нарратив недоступен: `{reason}`"
 
 
 def nodata_message(con, d):
