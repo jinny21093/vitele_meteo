@@ -134,6 +134,17 @@ def q(path, sql, params=()):
         con.close()
 
 
+def w(path, sql, params=()):
+    """Запись с явным commit (q() предназначен для SELECT — без commit
+    DML откатывается при close, что маскирует правку фикстуры)."""
+    con = sqlite3.connect(path)
+    try:
+        con.execute(sql, params)
+        con.commit()
+    finally:
+        con.close()
+
+
 LLM, TG, KUMA = u8_mocks.start_all()
 
 
@@ -315,6 +326,44 @@ class TestNumbersUnit(unittest.TestCase):
         msg = self.wr.fallback_message(self.facts, "provider_unreachable")
         self.assertTrue(msg.endswith("`provider_unreachable`"), msg)
         self.assertIn("*3.8*", msg, "MAJ-4: жирная шапка сохраняется")
+
+    def test_17_delta_inverted_still_rejected(self):
+        # U8.1 промпт-фикс (план А ревью): чекер НЕ ослаблен — «меньше
+        # на 2.4 мм» при факте rain_vs_prev=-2.4 (модуль дельты, находка
+        # live-прогона 3) остаётся invalid_numbers
+        f = {"comparison": {"prev_day_epoch": D - 86400, "t_vs_prev": 1.0,
+                            "rain_vs_prev": -2.4}}
+        ok, _ = self.u("Осадков выпало меньше на 2.4 мм, чем накануне.", f)
+        self.assertFalse(ok, "модуль дельты без знака — отказ остаётся")
+        ok2, _ = self.u("Стало холоднее на 0.8 °C.",
+                        {"comparison": {"t_vs_prev": -0.8}})
+        self.assertFalse(ok2, "знак только словом без минуса — тоже отказ")
+
+    def test_18_delta_verbatim_minus_passes(self):
+        # U8.1: дословный минус «−2.4 мм» (U+2212) проходит тест чисел
+        f = {"comparison": {"prev_day_epoch": D - 86400, "t_vs_prev": 1.0,
+                            "rain_vs_prev": -2.4}}
+        ok, _ = self.u("Изменение осадков: −2.4 мм к вчерашнему дню.", f)
+        self.assertTrue(ok, "−2.4 == факт -2.4 — совпадение")
+        ok2, _ = self.u("Холоднее: −0.8 °C к предыдущим суткам.",
+                        {"comparison": {"t_vs_prev": -0.8}})
+        self.assertTrue(ok2, "−0.8 == факт -0.8 — совпадение")
+
+    def test_19_prompt_delta_and_synthesis_verbatim(self):
+        # U8.1: оба новых пункта системного промпта присутствуют ДОСЛОВНО
+        target_delta = ("Отрицательные дельты и изменения цитируй с минусом "
+                        "дословно: \"−2.4 мм\", \"холоднее на 0.8 °C\" — "
+                        "без инверсии знака в тексте.")
+        target_synth = ("В конце 2–3 абзацев свяжи факты дня в картину: "
+                        "разброс температур, изменение давления, события, "
+                        "сравнение с нормой.")
+        self.assertIn(target_delta, self.wr._SYSTEM_PROMPT_LINES)
+        self.assertIn(target_synth, self.wr._SYSTEM_PROMPT_LINES)
+        system = "\n".join(self.wr._SYSTEM_PROMPT_LINES)
+        self.assertIn("\u22122.4", system, "минус — именно U+2212")
+        self.assertEqual(self.wr.build_messages(
+            {"day_label": "30.09.2026", "day_epoch": D, "n_samples": 1440}
+        )[0]["content"].count(target_delta), 1)
 
 
 class U8ScenarioTests(U8Base):
@@ -587,6 +636,40 @@ class U8ScenarioTests(U8Base):
         self.assertIsNone(row["llm_error"])
         self.assertIsNotNone(row["llm_text"])
         self.assertEqual(row["delivery_status"], "sent")
+
+    def test_26_delta_sign_live_pair(self):
+        # U8.1: пара из live-прогона 3 (rain_vs_prev=-2.4) через полный
+        # пайплайн: инверсия/модуль → invalid_numbers, дословный минус → sent
+        control(LLM.port, {"target": "llm", "content":
+                "Днём до 12.1 °C, ночью 3.8 °C. Осадков выпало на 2.4 мм "
+                "меньше вчерашних."})
+        build_db(self.db, d_over={"rain_mm": 0.0, "gdd_day": 0.0})  # без gdd=2.4 — иначе 2.4 легально в фактах
+        w(self.db, "UPDATE v_daily SET rain_mm=2.4 WHERE day_epoch=?",
+          (D - 86400,))  # rain_vs_prev = 0.0 - 2.4 = -2.4
+        p = run_report([], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        row = self.rows()[0]
+        self.assertEqual(row["llm_error"], "invalid_numbers",
+                         "«на 2.4 мм меньше» при факте −2.4 — отказ остаётся")
+        self.assertEqual(row["delivery_status"], "sent")
+        # второй прогон на чистой БД: дословный «−2.4 мм» (U+2212) проходит
+        self.db = os.path.join(self.work, "test26b.db")
+        self.env = make_env(self.db, self.kuma_conf)
+        control(TG.port, {"action": "reset"})
+        control(LLM.port, {"target": "llm", "content":
+                "Днём до 12.1 °C, ночью 3.8 °C. Изменение осадков "
+                "к вчерашнему дню: −2.4 мм."})
+        build_db(self.db, d_over={"rain_mm": 0.0, "gdd_day": 0.0})
+        w(self.db, "UPDATE v_daily SET rain_mm=2.4 WHERE day_epoch=?",
+          (D - 86400,))
+        p = run_report([], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        row = self.rows()[0]
+        self.assertIsNone(row["llm_error"], "дословный минус — тест чисел пройден")
+        self.assertIn("−2.4", row["llm_text"])
+        self.assertEqual(row["delivery_status"], "sent")
+        self.assertEqual(stats(TG.port)["bodies"][1]["body"]["text"],
+                         row["llm_text"], "нарратив доставлен владельцу плейном")
 
     # --- §7.3 smoke (test_s1…test_s5) ----------------------------------------
     def test_s1_dry_run(self):
