@@ -365,6 +365,23 @@ class TestNumbersUnit(unittest.TestCase):
             {"day_label": "30.09.2026", "day_epoch": D, "n_samples": 1440}
         )[0]["content"].count(target_delta), 1)
 
+    def test_20_prompt_location_verbatim(self):
+        # U8.2: пункт локации присутствует в системном промпте ДОСЛОВНО
+        # (образец — test_19; решение владельца: «на даче в Видлице»).
+        # Чекер чисел словами НЕ расширяется (решение ревьюера):
+        # галлюцинацию локации ловим промптом, наблюдаем штатные 06:50.
+        target_loc = ("Место: дача в Видлице (частная метеостанция). "
+                      "Пиши \"на даче в Видлице\" или \"в Видлице\"; "
+                      "никаких городов и регионов, кроме Видлицы; Москву "
+                      "не упоминай никогда.")
+        self.assertIn(target_loc, self.wr._SYSTEM_PROMPT_LINES)
+        system = "\n".join(self.wr._SYSTEM_PROMPT_LINES)
+        self.assertEqual(system.count("Москв"), 1,
+                         "корень «Москв-» в промпте — только в запрете")
+        self.assertEqual(self.wr.build_messages(
+            {"day_label": "30.09.2026", "day_epoch": D, "n_samples": 1440}
+        )[0]["content"].count(target_loc), 1)
+
 
 class U8ScenarioTests(U8Base):
 
