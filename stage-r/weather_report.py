@@ -1,6 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.2.0).
+"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.2.1).
+
+v1.2.1 (U8.4, литературный нарратив — решение владельца о продукте):
+  • Продукт: ДВЕ отправки с разными ролями — шапка = приборы (SQL,
+    точность, неизменно), нарратив = литературный пересказ БЕЗ
+    побуквенного контроля чисел.
+  • _SYSTEM_PROMPT_LINES: четыре пункта о числах («только числа из
+    фактов», «копия из фактов», «никаких около/примерно», «минус
+    дословно») заменены ОДНИМ дословным пунктом владельца («Ты —
+    наблюдатель… Числа используй свободно… НО: не выдумывай ЯВЛЕНИЙ…»);
+    остальные пункты (null, day_partial, norm, events_truncated, язык,
+    стиль 2–3 абзаца, связка фактов, Видлица) сохранены.
+  • Чекер §7.1 (двухуровневый тест чисел) УДАЛЁН вместе с причиной
+    отказа invalid_numbers — enum §3.5 сужен до 5 значений (timeout,
+    empty_response, wrong_language, provider_unreachable, provider_5xx).
+    Отказы нарратива: wrong_language, пустой ответ, не-текст,
+    провайдерские. fallback_message: assert на enum снят — исторические
+    строки БД со старым вердиктом invalid_numbers рендерятся как есть.
+  • Доставка без изменений (§3.3: шапка Markdown + нарратив плейном,
+    пара сообщений).
+  • Спека §2/§3.5/§7.1/§7.2 (сценарии 6, 20) временно расходится с
+    кодом — правка спеки за ревью (прецедент U8.2/U8.3).
 
 v1.2.0 (U8.3, retry-таймер + ok-push Kuma + слот 07:20):
   • CLI --retry-pending: ТОЛЬКО досылка всех pending_retry (тем же
@@ -59,8 +80,8 @@ pass-through, токен не логируется ни релеем, ни зд�
 Порядок прогона §4.3: flock 150с (снятие в finally) → валидация LLM_MODEL ∈
 whitelist (fail-fast, до первого запроса к провайдеру) → валидация v_daily по
 PRAGMA table_info → досылка pending_retry → факты за вчерашний день MSK →
-деградация при >8КБ → INSERT reports(status=pending) → LLM → двухуровневый
-тест чисел → Telegram → статусы доставки.
+деградация при >8КБ → INSERT reports(status=pending) → LLM → Telegram →
+статусы доставки.
 
 LLM-канон (§2, v1.1.1): temperature 0.3, max_tokens 800, HTTP timeout 60с,
 retries 2 (backoff 2с/8с, только timeout/5xx), 4xx/402 — без retry;
@@ -76,7 +97,9 @@ empty_response; finish_reason="length" → WARN и принять; ∉ {stop,len
 — смешивать в одном сообщении нельзя). In-run 3 попытки (2/8/30с), таймаут
 попытки 15с; исчерпаны → pending_retry; TTL 3 следующих прогона, на 4-й
 неудаче → failed + один Kuma push на переход (endpoint kuma_push.conf,
-механизм weather_backup.sh, M6). Причины fallback — enum §3.5 (6 значений).
+механизм weather_backup.sh, M6). Причины fallback — enum §3.5
+(5 значений, v1.2.1; исторический invalid_numbers из старых строк БД
+рендерится fallback-ом как есть).
 
 Идемпотентность (§4.4): idempotency_key = "{day_epoch}:{chat_id}" UNIQUE;
 rerun-правила по llm_text/llm_error. CLI (§5.3): --dry-run (без LLM и
@@ -100,7 +123,7 @@ import time
 import urllib.error
 import urllib.request
 
-WEATHER_REPORT_VERSION = "1.2.0"
+WEATHER_REPORT_VERSION = "1.2.1"
 DEFAULT_DB = "/home/auditbot/weather-dash/weather.db"
 LOCK_PATH = "/var/lock/weather-report.lock"
 LOCK_TIMEOUT_S = 150          # §4.2: блокирующий flock с таймаутом 150с
@@ -129,8 +152,11 @@ TG_ATTEMPTS = 3
 TG_BACKOFF_S = (2, 8, 30)
 TG_TIMEOUT_S = 15             # env-оверрайд TG_TIMEOUT_S — только для стендов
 PENDING_TTL_RUNS = 3          # pending_retry живёт ≤3 прогонов, на 4-й — failed
-LLM_ERROR_ENUM = ("timeout", "empty_response", "invalid_numbers",
-                  "wrong_language", "provider_unreachable", "provider_5xx")
+# §3.5 (v1.2.1/U8.4): enum причин отказа — 5 значений; invalid_numbers
+# удалён (нарратив без побуквенного контроля чисел). Исторические строки
+# БД могут хранить старое значение — fallback_message рендерит как есть.
+LLM_ERROR_ENUM = ("timeout", "empty_response", "wrong_language",
+                  "provider_unreachable", "provider_5xx")
 SEVERITY_RANK = {"high": 0, "mid": 1, "low": 2}
 KUMA_CONF = "/home/auditbot/weather-dash/kuma_push.conf"  # M6 (weather_backup.sh)
 
@@ -147,9 +173,6 @@ EVENT_TYPES = ("FROST", "HARD_FREEZE", "FOG", "STORM_APPROACH", "THUNDER_RISK",
                "RAPID_TEMP_RISE", "PRESSURE_CRASH", "RAIN_COUNTER_RESET",
                "SENSOR_MISSING", "SENSOR_STUCK", "SENSOR_DRIFT", "SENSOR_ANOMALY",
                "BATTERY_LOW")
-# §6.1: константы, разрешённые в тексте помимо чисел фактов (1440 mandated
-# спекой: «покрытие {n}/1440» — и в промпте §2.4, и в шаблоне §3.4).
-TEXT_NUMBER_CONSTS = {1440}
 # Тест 14 §7.2: журнал не содержит api[-]?key / bot[-]?token (паттерн §6.2).
 # В логах эти подстроки не используются; динамический текст — через sanitize().
 _SECRET_LOG_RE = re.compile(r"(?i)\S*(?:(?:api[-]?)?key|bot[-]?token)\S*")
@@ -411,84 +434,12 @@ def degrade_facts(facts):
     return json.dumps(facts, ensure_ascii=False)
 
 
-# --- §7.1 двухуровневый тест чисел -------------------------------------------
-_UNIT_RE = re.compile(r"\s{0,3}(°C|Вт/м²|мм\s*рт\.?\s*ст\.?|мм|м/с|°|%|ч(?![а-яёA-Za-z]))")
-_AROUND_RE = re.compile(r"(?i)(?:около|примерно|~)\s*-?\d+(?:[.,]\d+)?")
-_TIME_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
-_DATE_RE = re.compile(r"\b\d{1,2}\.(?:0[1-9]|1[0-2])(?:\.\d{4})?\b")  # DD.MM[.YYYY]
-_NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
-_COUNTER_RE = re.compile(r"(?i)\s{0,2}(?:раз|раза|событий|события|событие|дней|дня|день|дням|часов|часа|час)\b")
-# Находка деплоя live (2026-10-01): модель пишет дату словами — «30 сентября
-# 2026 года»; день месяца перед названием месяца — не голое число.
-_MONTH_RE = re.compile(r"(?i)\s{0,2}(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)")
-
-
-def facts_numbers(facts):
-    """Все числовые листья facts_json (bool исключается). -> set[float]."""
-    out = set()
-
-    def walk(o):
-        if isinstance(o, bool):
-            return
-        if isinstance(o, (int, float)):
-            out.add(float(o))
-        elif isinstance(o, dict):
-            for v in o.values():
-                walk(v)
-        elif isinstance(o, list):
-            for v in o:
-                walk(v)
-
-    walk(facts)
-    return out
-
-
-def norm_number(raw):
-    """§7.1 нормализация: запятая → точка; сравнение — float («18,2 == 18.2»,
-    «−0,3 == -0.3», «18.20 → 18.2» через float-каноничность)."""
-    return float(raw.replace(",", "."))
-
-
-def check_numbers(text, facts):
-    """§7.1: уровень A (число+единица — строго ∈ фактов), уровень B (голые —
-    с исключениями: годы 1900–2100, HH:MM/DD.MM, день месяца словами,
-    счётчики, константы спеки). «Около N» — совпало + WARN. -> (ok, warns)."""
-    warns, bad = [], []
-    allowed = facts_numbers(facts) | {float(c) for c in TEXT_NUMBER_CONSTS}
-
-    t = _AROUND_RE.sub(lambda m: (warns.append(m.group(0).strip()), " ")[1], text)
-    t = _TIME_RE.sub(" ", t)
-    t = _DATE_RE.sub(" ", t)
-    t = t.replace("\u2212", "-").replace("\u2013", "-")  # − и – → - (§7.1)
-
-    for m in _NUM_RE.finditer(t):
-        start = m.start()
-        neg = start > 0 and t[start - 1] == "-" and not (
-            start > 1 and t[start - 2].isdigit())  # «3-5» — диапазон, не минус
-        try:
-            val = norm_number(m.group(0))
-        except ValueError:
-            continue
-        if neg:
-            val = -val
-        unit = _UNIT_RE.match(t, m.end())
-        if unit:  # уровень A: строго, без исключений
-            if val not in allowed:
-                bad.append(f"{m.group(0)} {unit.group(1).strip()}")
-        else:     # уровень B: исключения §7.1
-            if (1 <= val <= 31 and "." not in m.group(0) and "," not in m.group(0)
-                    and _MONTH_RE.match(t, m.end())):
-                continue  # день месяца текстовой датой («30 сентября 2026»)
-            if 1900 <= val <= 2100 and "." not in m.group(0) and "," not in m.group(0):
-                continue  # год
-            if _COUNTER_RE.match(t, m.end()):
-                continue  # счётчик со словом «раз/событий/дней/часов»
-            if val in allowed:
-                continue
-            bad.append(m.group(0))
-    if bad:
-        return False, warns
-    return True, warns
+# U8.4 (решение владельца о продукте): двухуровневый тест чисел §7.1 и
+# причина отказа invalid_numbers УДАЛЕНЫ — нарратив литературный, числа
+# используются свободно (округление, перефразирование), побуквенный
+# контроль снят. За фактическую корректность отвечают промпт (запрет
+# выдуманных ЯВЛЕНИЙ, null — «данных нет») и оставшиеся проверки:
+# wrong_language, пустой ответ, не-текст, провайдерские.
 
 
 _CYR_RE = re.compile(r"[\u0400-\u04FF]")
@@ -518,13 +469,17 @@ def looks_non_text(text):
 
 # --- §2.4 промпт-дисциплина (дословные формулировки спеки) -------------------
 _SYSTEM_PROMPT_LINES = (
-    "Используй только числа из блока фактов. Не выдумывай, не вычисляй, "
-    "не округляй, не конвертируй единицы.",
-    "Числа в тексте — копия из фактов, в тех же единицах, что в БД "
-    "(°C, мм, м/с, мм рт. ст.). Конвертация единиц запрещена.",
-    "Никаких \"половина градуса\", \"около\", \"примерно\", пересчётов.",
-    "Отрицательные дельты и изменения цитируй с минусом дословно: "
-    "\"−2.4 мм\", \"холоднее на 0.8 °C\" — без инверсии знака в тексте.",
+    # U8.4 (v1.2.1): пункт о числах переписан ДОСЛОВНО по директиве
+    # владельца (литературный нарратив; числа свободны; НО — без
+    # выдуманных явлений; место — только Видлица; язык — русский).
+    "Ты — наблюдатель на метеостанции на даче в Видлице. Пиши живой, "
+    "литературный рассказ о погоде дня: вьюга, ветер, дождь — образно и "
+    "по-человечески. Числа используй свободно: округляй (\"почти на четыре "
+    "градуса\", \"около минус одного\"), перефразируй (\"к ночи "
+    "подморозило\"). Направления и характер явлений передавай словами, "
+    "не таблицей. НО: не выдумывай ЯВЛЕНИЙ, которых не было (не было "
+    "дождя — не пишем дождь; null — \"данных нет\"); место — только "
+    "Видлица; язык — русский.",
     "Если поле факта null — не утверждай про него ничего. \"Дождя не было\" "
     "при rain_mm = null — ошибка. Пиши \"данные недоступны\".",
     "Если day_partial = true — упомяни, что данные неполные, "
@@ -673,12 +628,9 @@ def call_llm(cfg, facts):
     if cyr_share(text) < 0.70:
         log(f"LLM: доля кириллицы {cyr_share(text):.0%} < 70%")
         raise LLMRefusal("wrong_language")
-    ok, warns = check_numbers(text, facts)
-    if not ok:
-        log("LLM: тест чисел провален — числа в тексте ∉ фактов")
-        raise LLMRefusal("invalid_numbers")
-    for w in warns:
-        log(f"WARN нарушение «копия из фактов» (около/примерно): {sanitize(w)}")
+    # U8.4: побуквенный тест чисел §7.1 снят — нарратив литературный,
+    # числа свободны (округление/перефразирование по пункту владельца);
+    # invalid_numbers больше не ставится.
 
     return {
         "llm_text": text,
@@ -716,8 +668,10 @@ def fallback_message(facts, reason):
     """§3.4: шаблон + reason из enum §3.5. v1.0.2: reason в code-backticks —
     живой Bot API парсит Markdown, `_` enum-значений (provider_unreachable /
     provider_5xx) без обёртки даёт 400 «can't parse entities» (находка
-    деплоя live; моки §7.2 парсинг Markdown не эмулируют)."""
-    assert reason in LLM_ERROR_ENUM, reason
+    деплоя live; моки §7.2 парсинг Markdown не эмулируют). U8.4: assert на
+    enum снят — исторические строки БД могут хранить вердикт
+    invalid_numbers (в v1.2.1 из enum удалён), fallback обязан
+    рендериться для ЛЮБОГО сохранённого вердикта."""
     return header_markdown(facts) + f" Нарратив недоступен: `{reason}`"
 
 
@@ -1023,8 +977,8 @@ def regenerate_reset(con, rid):
 
 def run_regenerate(con, cfg, row):
     """Общий хвост --regenerate*: сброс llm_* → повтор LLM по канону §2
-    (message_for_row на NULL/NULL-строке) + чекер §7.1 + доставка §3.3.
-    Строка УЖЕ существует — INSERT не выполняется (новых строк нет)."""
+    (message_for_row на NULL/NULL-строке) + доставка §3.3. Строка УЖЕ
+    существует — INSERT не выполняется (новых строк нет)."""
     regenerate_reset(con, row["id"])
     row = refetch(con, row["id"])
     msgs, upd = message_for_row(con, row, cfg)

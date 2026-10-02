@@ -4,11 +4,16 @@
 
 Запуск:  python3 test_u8.py [-v]
 Состав:
-  TestNumbersUnit  — юнит-пары §7.1 (двухуровневый тест чисел), d_epoch,
-                     кириллица, деградация фактов;
-  U8ScenarioTests  — 25 сценариев §7.2 (мок-LLM/мок-Telegram/мок-Kuma на
-                     127.0.0.1, БД-фикстуры в tmp) + 5 смоуков §7.3
-                     (test_s1…test_s5; бюджет Z.ai — ручной после деплоя).
+  TestNumbersUnit  — инварианты (d_epoch, кириллица, деградация фактов,
+                     fallback) + пункты системного промпта дословно;
+                     юнит-пары §7.1 удалены вместе с чекером (v1.2.1/U8.4,
+                     литературный нарратив — invalid_numbers не ставится);
+  U8ScenarioTests  — сценарии §7.2 (мок-LLM/мок-Telegram/мок-Kuma на
+                     127.0.0.1, БД-фикстуры в tmp); нумерация = сценарии
+                     спеки, пропуски 6/20/26 — удалённые тесты
+                     invalid_numbers-ветки (U8.4) + смоуки §7.3
+                     (test_s1…test_s5; бюджет Z.ai — ручной после деплоя)
+                     + test_s6 (U8.4: округлённый нарратив проходит).
 
 Секреты: только тестовые значения (фейковый токен/ключ), в лог не попадают.
 """
@@ -214,7 +219,8 @@ class U8Base(unittest.TestCase):
 
 
 class TestNumbersUnit(unittest.TestCase):
-    """§7.1 юнит-пары + инварианты (без сети)."""
+    """Инварианты + промпт-пункты дословно (без сети). Юнит-пары §7.1
+    удалены вместе с чекером (U8.4); нумерация сохранена по истории."""
 
     @classmethod
     def setUpClass(cls):
@@ -242,52 +248,6 @@ class TestNumbersUnit(unittest.TestCase):
             "norm": {"norm_n": 7, "norm_t_avg": 6.87, "norm_rain_mm": 1.23},
         }
 
-    def u(self, text, facts=None):
-        return self.wr.check_numbers(text, facts if facts is not None else self.facts)
-
-    def test_01_five_ms_vs_fact8(self):
-        f8 = {**self.facts, "wind": {**self.facts["wind"], "gust_max": 8.0}}
-        ok, _ = self.u("Ветер усиливался до 5 м/с.", f8)
-        self.assertFalse(ok, "«5 м/с при факте 8» обязан провалиться")
-
-    def test_02_comma_decimal(self):
-        ok, _ = self.u("Температура была 18,2 °C.", {"temperature": {"t_out_max": 18.2}})
-        self.assertTrue(ok, "«18,2 == 18.2» обязан совпасть")
-
-    def test_03_unicode_minus(self):
-        ok, _ = self.u("Заморозок до −0,3 °C.", {"events": [{"value": -0.3}]})
-        self.assertTrue(ok, "«−0,3 == -0.3» обязан совпасть")
-
-    def test_04_about_warns_not_fails(self):
-        f8 = {**self.facts, "wind": {**self.facts["wind"], "gust_max": 8.0}}
-        ok, warns = self.u("Ветер около 5 м/с.", f8)
-        self.assertTrue(ok, "«около N» — совпадение + WARN, не отказ")
-        self.assertTrue(warns and "5" in warns[0], warns)
-
-    def test_05_counter_exception(self):
-        ok, _ = self.u("Дождь шёл в 2 раза дольше обычного.")
-        self.assertTrue(ok, "счётчик со словом «раза» — исключение уровня B")
-
-    def test_06_trailing_zeros(self):
-        ok, _ = self.u("Осадки 18.20 мм.", {"rain": {"rain_mm": 18.2}})
-        self.assertTrue(ok, "«18.20 → 18.2»")
-
-    def test_07_year_exception(self):
-        ok, _ = self.u("Лето 2026 было тёплым.")
-        self.assertTrue(ok, "годы 1900–2100 — исключение")
-
-    def test_08_time_and_date_excluded(self):
-        ok, _ = self.u("В 06:15, 30.09 ветер был 5.8 м/с.")
-        self.assertTrue(ok, "HH:MM и DD.MM не участвуют в тесте")
-
-    def test_09_bare_number_from_facts(self):
-        ok, _ = self.u("Пробег ветра 121 км.")
-        self.assertTrue(ok)
-
-    def test_10_bare_number_not_from_facts(self):
-        ok, _ = self.u("Пробег ветра 999 км.")
-        self.assertFalse(ok, "голое число ∉ фактов → уровень B провален")
-
     def test_11_epoch_invariant(self):
         self.assertEqual(self.wr.d_epoch_of(PINNED_NOW), D)
         self.assertEqual(D % 86400, 75600)
@@ -307,63 +267,44 @@ class TestNumbersUnit(unittest.TestCase):
         self.assertEqual(out["events_total"], 400)
         self.assertLessEqual(self.wr.facts_json_bytes(out), 8192)
 
-    def test_14_textual_date_month_live(self):
-        # находка деплоя live (2026-10-01): модель пишет дату словами —
-        # «30 сентября 2026 года»; день месяца — не голое число (30 ∉ фактов)
-        ok, _ = self.u("30 сентября 2026 года в Москве было 3.8 °C.")
-        self.assertTrue(ok, "день месяца текстовой датой — исключение уровня B")
-
-    def test_15_textual_date_month_unit_still_strict(self):
-        # слово-месяц не ослабляет уровень A: 12,1 °C проверяется как обычно
-        ok, _ = self.u("Похолодание ожидалось 5 сентября, до 12,1 °C.")
-        self.assertTrue(ok)
-        bad, _ = self.u("Похолодание ожидалось 5 сентября, до 12,9 °C.")
-        self.assertFalse(bad, "уровень A при слове-месяце в тексте остаётся строгим")
-
     def test_16_fallback_reason_backticks(self):
         # находка деплоя live (2026-10-01, прогон 2): `_` enum-значений ломает
         # legacy-Markdown живого Bot API (400 can't parse entities)
         msg = self.wr.fallback_message(self.facts, "provider_unreachable")
         self.assertTrue(msg.endswith("`provider_unreachable`"), msg)
         self.assertIn("*3.8*", msg, "MAJ-4: жирная шапка сохраняется")
+        # U8.4: исторический вердикт invalid_numbers (из enum удалён) —
+        # fallback обязан рендериться без assert, в тех же backticks
+        legacy = self.wr.fallback_message(self.facts, "invalid_numbers")
+        self.assertTrue(legacy.endswith("`invalid_numbers`"), legacy)
 
-    def test_17_delta_inverted_still_rejected(self):
-        # U8.1 промпт-фикс (план А ревью): чекер НЕ ослаблен — «меньше
-        # на 2.4 мм» при факте rain_vs_prev=-2.4 (модуль дельты, находка
-        # live-прогона 3) остаётся invalid_numbers
-        f = {"comparison": {"prev_day_epoch": D - 86400, "t_vs_prev": 1.0,
-                            "rain_vs_prev": -2.4}}
-        ok, _ = self.u("Осадков выпало меньше на 2.4 мм, чем накануне.", f)
-        self.assertFalse(ok, "модуль дельты без знака — отказ остаётся")
-        ok2, _ = self.u("Стало холоднее на 0.8 °C.",
-                        {"comparison": {"t_vs_prev": -0.8}})
-        self.assertFalse(ok2, "знак только словом без минуса — тоже отказ")
-
-    def test_18_delta_verbatim_minus_passes(self):
-        # U8.1: дословный минус «−2.4 мм» (U+2212) проходит тест чисел
-        f = {"comparison": {"prev_day_epoch": D - 86400, "t_vs_prev": 1.0,
-                            "rain_vs_prev": -2.4}}
-        ok, _ = self.u("Изменение осадков: −2.4 мм к вчерашнему дню.", f)
-        self.assertTrue(ok, "−2.4 == факт -2.4 — совпадение")
-        ok2, _ = self.u("Холоднее: −0.8 °C к предыдущим суткам.",
-                        {"comparison": {"t_vs_prev": -0.8}})
-        self.assertTrue(ok2, "−0.8 == факт -0.8 — совпадение")
-
-    def test_19_prompt_delta_and_synthesis_verbatim(self):
-        # U8.1: оба новых пункта системного промпта присутствуют ДОСЛОВНО
-        target_delta = ("Отрицательные дельты и изменения цитируй с минусом "
-                        "дословно: \"−2.4 мм\", \"холоднее на 0.8 °C\" — "
-                        "без инверсии знака в тексте.")
+    def test_19_prompt_literary_verbatim(self):
+        # U8.4: пункт владельца о литературном нарративе в промпте ДОСЛОВНО;
+        # старые пункты о числах («копия из фактов», «не округляй», «минус
+        # дословно») в промпте БОЛЬШЕ НЕ стоят; связка фактов сохранена
+        target_lit = ('Ты — наблюдатель на метеостанции на даче в Видлице. '
+                      'Пиши живой, литературный рассказ о погоде дня: вьюга, '
+                      'ветер, дождь — образно и по-человечески. Числа '
+                      'используй свободно: округляй ("почти на четыре '
+                      'градуса", "около минус одного"), перефразируй ("к '
+                      'ночи подморозило"). Направления и характер явлений '
+                      'передавай словами, не таблицей. НО: не выдумывай '
+                      'ЯВЛЕНИЙ, которых не было (не было дождя — не пишем '
+                      'дождь; null — "данных нет"); место — только '
+                      'Видлица; язык — русский.')
         target_synth = ("В конце 2–3 абзацев свяжи факты дня в картину: "
                         "разброс температур, изменение давления, события, "
                         "сравнение с нормой.")
-        self.assertIn(target_delta, self.wr._SYSTEM_PROMPT_LINES)
+        self.assertIn(target_lit, self.wr._SYSTEM_PROMPT_LINES)
         self.assertIn(target_synth, self.wr._SYSTEM_PROMPT_LINES)
         system = "\n".join(self.wr._SYSTEM_PROMPT_LINES)
-        self.assertIn("\u22122.4", system, "минус — именно U+2212")
+        for gone in ("копия из фактов", "не округляй", "половина градуса",
+                     "минусом дословно"):
+            self.assertNotIn(gone, system,
+                             f"старый пункт о числах ещё стоит: {gone}")
         self.assertEqual(self.wr.build_messages(
             {"day_label": "30.09.2026", "day_epoch": D, "n_samples": 1440}
-        )[0]["content"].count(target_delta), 1)
+        )[0]["content"].count(target_lit), 1)
 
     def test_20_prompt_location_verbatim(self):
         # U8.2: пункт локации присутствует в системном промпте ДОСЛОВНО
@@ -455,13 +396,7 @@ class U8ScenarioTests(U8Base):
         self.assertIn("Нарратив недоступен: `wrong_language`",
                       tg["bodies"][0]["body"]["text"])
 
-    def test_06_invalid_numbers(self):
-        control(LLM.port, {"target": "llm", "content":
-                "Днём было 12.9 °C, ветер до 4.4 м/с."})
-        p = self.gen()
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertEqual(self.rows()[0]["llm_error"], "invalid_numbers")
-        self.assertEqual(self.rows()[0]["delivery_status"], "sent")
+    # test_06 (спека §7.2: invalid_numbers) УДАЛЁН — U8.4 снял чекер чисел
 
     def test_07_tg_down_pending_retry(self):
         control(TG.port, {"target": "tg", "fail_always": True})
@@ -596,14 +531,8 @@ class U8ScenarioTests(U8Base):
         self.assertEqual(facts["events"][0]["severity"], "high",
                          "сортировка severity DESC, ts_start ASC")
 
-    def test_20_five_ms_vs_8(self):
-        control(LLM.port, {"target": "llm", "content":
-                "Ветер усиливался до 5 м/с, порывы достигали 8 м/с."})
-        p = self.gen(d_over={"gust_max": 8.0})
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertEqual(self.rows()[0]["llm_error"], "invalid_numbers")
-        self.assertIn("Нарратив недоступен: `invalid_numbers`",
-                      stats(TG.port)["bodies"][0]["body"]["text"])
+    # test_20 (спека §7.2: «5 м/с при факте 8» → invalid_numbers) УДАЛЁН —
+    # U8.4 снял чекер чисел (директива: «20-й и связанные»)
 
     def test_21_paid_model_fail_fast(self):
         build_db(self.db)
@@ -657,49 +586,19 @@ class U8ScenarioTests(U8Base):
         self.assertIsNotNone(row["llm_text"])
         self.assertEqual(row["delivery_status"], "sent")
 
-    def test_26_delta_sign_live_pair(self):
-        # U8.1: пара из live-прогона 3 (rain_vs_prev=-2.4) через полный
-        # пайплайн: инверсия/модуль → invalid_numbers, дословный минус → sent
-        control(LLM.port, {"target": "llm", "content":
-                "Днём до 12.1 °C, ночью 3.8 °C. Осадков выпало на 2.4 мм "
-                "меньше вчерашних."})
-        build_db(self.db, d_over={"rain_mm": 0.0, "gdd_day": 0.0})  # без gdd=2.4 — иначе 2.4 легально в фактах
-        w(self.db, "UPDATE v_daily SET rain_mm=2.4 WHERE day_epoch=?",
-          (D - 86400,))  # rain_vs_prev = 0.0 - 2.4 = -2.4
-        p = run_report([], self.env)
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        row = self.rows()[0]
-        self.assertEqual(row["llm_error"], "invalid_numbers",
-                         "«на 2.4 мм меньше» при факте −2.4 — отказ остаётся")
-        self.assertEqual(row["delivery_status"], "sent")
-        # второй прогон на чистой БД: дословный «−2.4 мм» (U+2212) проходит
-        self.db = os.path.join(self.work, "test26b.db")
-        self.env = make_env(self.db, self.kuma_conf)
-        control(TG.port, {"action": "reset"})
-        control(LLM.port, {"target": "llm", "content":
-                "Днём до 12.1 °C, ночью 3.8 °C. Изменение осадков "
-                "к вчерашнему дню: −2.4 мм."})
-        build_db(self.db, d_over={"rain_mm": 0.0, "gdd_day": 0.0})
-        w(self.db, "UPDATE v_daily SET rain_mm=2.4 WHERE day_epoch=?",
-          (D - 86400,))
-        p = run_report([], self.env)
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        row = self.rows()[0]
-        self.assertIsNone(row["llm_error"], "дословный минус — тест чисел пройден")
-        self.assertIn("−2.4", row["llm_text"])
-        self.assertEqual(row["delivery_status"], "sent")
-        self.assertEqual(stats(TG.port)["bodies"][1]["body"]["text"],
-                         row["llm_text"], "нарратив доставлен владельцу плейном")
+    # test_26 (U8.1 дельта-пара: инверсия/модуль vs дословный минус)
+    # УДАЛЁН — invalid_numbers больше не ставится (U8.4)
 
     def test_27_regenerate_poisoned_to_clean(self):
-        # U8.1: отравленная строка (invalid_numbers) → --regenerate-last →
-        # чистый нарратив; строка ТА ЖЕ (новых нет), доставка отправлена
+        # U8.1: отравленная строка → --regenerate-last → чистый нарратив;
+        # строка ТА ЖЕ (новых нет), доставка отправлена. U8.4: отравление
+        # wrong_language — invalid_numbers больше не ставится (чекер снят)
         control(LLM.port, {"target": "llm", "content":
-                "Днём было 12.9 °C, ветер до 4.4 м/с."})  # числа ∉ фактов
+                "Weather was quite nasty today with freezing rain overnight."})
         p = self.gen()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         row = self.rows()[0]
-        self.assertEqual(row["llm_error"], "invalid_numbers")
+        self.assertEqual(row["llm_error"], "wrong_language")
         self.assertIsNone(row["llm_text"])
         self.assertEqual(row["delivery_attempts"], 1)
         rid = row["id"]
@@ -853,7 +752,7 @@ class U8ScenarioTests(U8Base):
         self.assertEqual(len(kq), 2, "успешная досылка sent-строки — тоже ok-push")
         self.assertTrue(all("status=up" in x for x in kq), "down-ов нет")
 
-    # --- §7.3 smoke (test_s1…test_s5) ----------------------------------------
+    # --- §7.3 smoke (test_s1…test_s5) + U8.4 (test_s6) ------------------------
     def test_s1_dry_run(self):
         build_db(self.db)
         p = run_report(["--dry-run"], self.env)
@@ -891,6 +790,35 @@ class U8ScenarioTests(U8Base):
         print("[s5] бюджет Z.ai — проверка ВРУЧНУЮ после первого прод-прогона "
               "(usage за месяц = $0.00); в локальном стенде не автоматизируется")
         self.assertTrue(True)
+
+    def test_s6_literary_rounding_smoke(self):
+        # U8.4: литературный нарратив со СВОБОДНЫМИ числами — «около минус
+        # одного» при факте t_out_min=-0.9 и «почти на четыре градуса» при
+        # t_vs_prev=-3.61 — ПРОХОДИТ полный пайплайн (до v1.2.1 округление
+        # отвергалось чекером §7.1 → invalid_numbers → fallback)
+        control(LLM.port, {"target": "llm", "content":
+                "Ночь на даче в Видлице выдалась студёной: к рассвету было "
+                "около минус одного, лужи подёрнулись льдом. Днём заметно "
+                "оттепелело — почти на четыре градуса теплее вчерашнего."})
+        build_db(self.db, d_over={"t_out_min": -0.9, "t_out_avg": 3.29,
+                                  "frost_flag": 1})
+        # t_vs_prev = 3.29 (D) − 6.90 (D-1) = −3.61 — «почти на четыре»
+        p = run_report([], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        row = self.rows()[0]
+        self.assertIsNone(row["llm_error"], "округление — больше не отказ")
+        self.assertIn("около минус одного", row["llm_text"])
+        self.assertIn("почти на четыре градуса", row["llm_text"])
+        facts = json.loads(row["facts_json"])
+        self.assertEqual(facts["temperature"]["t_out_min"], -0.9)
+        self.assertEqual(facts["comparison"]["t_vs_prev"], -3.61)
+        self.assertEqual(row["delivery_status"], "sent")
+        tg = stats(TG.port)
+        self.assertEqual(tg["requests"], 2, "шапка + литературный нарратив")
+        self.assertEqual(tg["bodies"][1]["body"]["text"], row["llm_text"])
+        kq = stats(KUMA.port)["queries"]
+        self.assertEqual(len(kq), 1, "ok-push на успешную доставку")
+        self.assertIn("status=up", kq[0])
 
 
 if __name__ == "__main__":
