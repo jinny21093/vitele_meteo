@@ -1,0 +1,17 @@
+[Unit]
+Description=Weather report retry: досылка pending_retry без генерации (U8.3 --retry-pending)
+After=network-online.target
+Wants=network-online.target
+OnFailure=weather-report-alert.service
+
+[Service]
+Type=oneshot
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+EnvironmentFile=/home/auditbot/weather-dash/report.env
+Nice=19
+TimeoutStartSec=300
+ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/weather_report.py --retry-pending
+
+[Install]
+WantedBy=multi-user.target

@@ -400,7 +400,10 @@ class U8ScenarioTests(U8Base):
         self.assertNotIn("parse_mode", tg["bodies"][1]["body"])
         self.assertEqual(tg["bodies"][1]["body"]["text"], rows[0]["llm_text"])
         self.assertTrue(tg["bodies"][0]["body"]["text"].startswith("Погода за 30.09:"))
-        self.assertEqual(stats(KUMA.port)["queries"], [])
+        kq = stats(KUMA.port)["queries"]
+        self.assertEqual(len(kq), 1,
+                         "U8.3: успешная доставка — ровно один ok-push")
+        self.assertIn("status=up", kq[0])
 
     def test_02_partial_day(self):
         control(LLM.port, {"target": "llm", "content":
@@ -744,6 +747,111 @@ class U8ScenarioTests(U8Base):
             p = run_report(flags, self.env)
             self.assertEqual(p.returncode, 2, f"эксклюзивность: {flags}")
             self.assertIn("взаимоисключающие", p.stderr)
+
+    # --- U8.3: retry-прогон + ok-push Kuma ------------------------------------
+    def test_29_retry_pending_redelivers_no_generation(self):
+        # --retry-pending: досылка pending_retry из сохранённого llm_text
+        # (шапка+нарратив), БЕЗ генерации нового дня и БЕЗ LLM; ровно +1
+        # attempt за прогон; ok-push на переход в sent
+        control(TG.port, {"target": "tg", "fail_always": True})
+        p = self.gen()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        row = self.rows()[0]
+        rid = row["id"]
+        self.assertEqual(row["delivery_status"], "pending_retry")
+        self.assertEqual(row["delivery_attempts"], 1)
+        self.assertIsNotNone(row["llm_text"])
+        llm_after_gen = stats(LLM.port)["requests"]
+        control(TG.port, {"action": "reset"})
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("--retry-pending: pending_retry строк: 1", p.stdout)
+        rows = self.rows()
+        self.assertEqual(len(rows), 1, "без генерации нового дня")
+        row = rows[0]
+        self.assertEqual(row["id"], rid, "дослана та же строка")
+        self.assertEqual(row["delivery_status"], "sent")
+        self.assertEqual(row["delivery_attempts"], 2,
+                         "retry-прогон — тоже +1 attempt")
+        self.assertEqual(stats(LLM.port)["requests"], llm_after_gen,
+                         "LLM на досылке не вызывается")
+        tg = stats(TG.port)
+        self.assertEqual(tg["requests"], 2, "шапка + сохранённый нарратив")
+        self.assertEqual(tg["bodies"][1]["body"]["text"], row["llm_text"])
+        kq = stats(KUMA.port)["queries"]
+        self.assertEqual(len(kq), 1, "ровно один ok-push на восстановление")
+        self.assertIn("status=up", kq[0])
+
+    def test_30_retry_pending_empty_is_noop(self):
+        build_db(self.db)
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("--retry-pending: pending_retry строк: 0", p.stdout)
+        self.assertEqual(len(self.rows()), 0, "новых строк нет")
+        self.assertEqual(stats(LLM.port)["requests"], 0)
+        self.assertEqual(stats(TG.port)["requests"], 0)
+        self.assertEqual(stats(KUMA.port)["queries"], [])
+
+    def test_31_retry_ttl_same_as_main(self):
+        # retry-прогон тоже +1 attempt; TTL 3 не ускоряется и не стопорится:
+        # attempts 1(gen)+2+3 → pending_retry, 4-й → failed + один down
+        control(TG.port, {"target": "tg", "fail_always": True})
+        p = self.gen()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        for i in range(2, 5):
+            p = run_report(["--retry-pending"], self.env)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            row = self.rows()[0]
+            self.assertEqual(row["delivery_attempts"], i,
+                             f"retry-прогон {i - 1}: ровно +1 attempt")
+            if i < 4:
+                self.assertEqual(row["delivery_status"], "pending_retry")
+        row = self.rows()[0]
+        self.assertEqual(row["delivery_status"], "failed",
+                         "attempts=4 > TTL 3 → failed, не залипает")
+        kq = stats(KUMA.port)["queries"]
+        self.assertEqual(len(kq), 1, "up-ов не было, ровно один down")
+        self.assertIn("status=down", kq[0])
+        self.assertEqual(stats(LLM.port)["requests"], 1,
+                         "LLM только в первом прогоне")
+
+    def test_32_retry_exclusivity_and_sent_row_skipped(self):
+        self.gen()
+        n = len(self.rows())
+        for flags in (["--retry-pending", "--resend-last"],
+                      ["--retry-pending", "--regenerate-last"],
+                      ["--resend-last", "--retry-pending"]):
+            p = run_report(flags, self.env)
+            self.assertEqual(p.returncode, 2, f"эксклюзивность: {flags}")
+            self.assertIn("взаимоисключающие", p.stderr)
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("pending_retry строк: 0", p.stdout,
+                      "sent-строка retry-ом не трогается")
+        self.assertEqual(len(self.rows()), n)
+        self.assertEqual(stats(TG.port)["requests"], 2,
+                         "только пара из gen; retry ничего не досылал")
+
+    def test_33_kuma_up_per_successful_delivery(self):
+        # ok-push: неудача — тишина; восстановление pending→sent — один up;
+        # успешная досылка sent-строки (--resend-last) — тоже up; down нет
+        control(TG.port, {"target": "tg", "fail_always": True})
+        p = self.gen()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.rows()[0]["delivery_status"], "pending_retry")
+        self.assertEqual(stats(KUMA.port)["queries"], [], "неудача — без push-ей")
+        control(TG.port, {"action": "reset"})
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        kq = stats(KUMA.port)["queries"]
+        self.assertEqual(len(kq), 1)
+        self.assertIn("status=up", kq[0])
+        self.assertIn("sent", kq[0])
+        p = run_report(["--resend-last"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        kq = stats(KUMA.port)["queries"]
+        self.assertEqual(len(kq), 2, "успешная досылка sent-строки — тоже ok-push")
+        self.assertTrue(all("status=up" in x for x in kq), "down-ов нет")
 
     # --- §7.3 smoke (test_s1…test_s5) ----------------------------------------
     def test_s1_dry_run(self):

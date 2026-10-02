@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.1.1).
+"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.2.0).
+
+v1.2.0 (U8.3, retry-таймер + ok-push Kuma + слот 07:20):
+  • CLI --retry-pending: ТОЛЬКО досылка всех pending_retry (тем же
+    message_for_row/deliver — семантика §3.3 без изменений: один круг
+    in-run попыток, +1 прогон к attempts, TTL 3, failed+Kuma на переходе),
+    БЕЗ генерации текущего дня; LLM зовётся только на NULL/NULL-строке.
+    Для hourly-таймера weather-report-retry (OnCalendar *:05:00 — вне
+    топ-минуты, не пересекается с отчётным слотом).
+  • ok-push в Kuma (механизм M6, тот же push-URL): каждый переход строки
+    в sent (свежая доставка или восстановление) пушит status=up —
+    молчание Kuma = инцидент. down — как раньше: ровно один на переход
+    в failed. Отдельный монитор не нужен.
+  • Слоты (юниты, деплой после приёмки): weather-report.timer
+    06:50 → 07:20 (решение владельца; снапшот/бэкап остаются раньше),
+    weather-report-retry.timer — :05 каждого часа.
 
 v1.1.1 (U8.2, локация в промпте — фикс галлюцинации «в Москве»):
   • _SYSTEM_PROMPT_LINES +1 пункт дословно: место — дача в Видлице
@@ -67,7 +82,8 @@ empty_response; finish_reason="length" → WARN и принять; ∉ {stop,len
 rerun-правила по llm_text/llm_error. CLI (§5.3): --dry-run (без LLM и
 доставки, exit 0), --resend-last (нет строк → exit 1), --resend DAY_EPOCH,
 --regenerate-last / --regenerate DAY_EPOCH (U8.1: повтор LLM-шага
-существующей строки, llm_* → NULL, новых строк не создаёт).
+существующей строки, llm_* → NULL, новых строк не создаёт),
+--retry-pending (U8.3: только досылка pending_retry, без генерации).
 
 Секреты (§6.2): только env (EnvironmentFile юнита) или файл по
 LLM_SECRETS_FILE (600, KEY=VALUE); env приоритетен. В логи/argv/git — никогда.
@@ -84,7 +100,7 @@ import time
 import urllib.error
 import urllib.request
 
-WEATHER_REPORT_VERSION = "1.1.1"
+WEATHER_REPORT_VERSION = "1.2.0"
 DEFAULT_DB = "/home/auditbot/weather-dash/weather.db"
 LOCK_PATH = "/var/lock/weather-report.lock"
 LOCK_TIMEOUT_S = 150          # §4.2: блокирующий flock с таймаутом 150с
@@ -786,7 +802,11 @@ def kuma_push(status, msg):
 def deliver(con, row, cfg, msgs):
     """In-run доставка §3.3: до 3 попыток (2/8/30с), таймаут попытки 15с.
     Все неуспешны → pending_retry; TTL 3 прогона, на 4-й неудаче → failed +
-    один Kuma push на переход. Обновляет delivery_status/attempts/error."""
+    один Kuma push на переход. Обновляет delivery_status/attempts/error.
+    U8.3: переход в sent (свежая доставка/восстановление) даёт один
+    Kuma ok-push (status=up, тот же endpoint M6) — молчание Kuma =
+    инцидент; повторная успешная досылка sent-строки тоже считается
+    успешной досылкой и пушит up."""
     rid, d = row["id"], row["day_epoch"]
     prev_status = row["delivery_status"]
     attempts = int(row["delivery_attempts"] or 0)
@@ -822,6 +842,10 @@ def deliver(con, row, cfg, msgs):
     con.execute("COMMIT")
     if status == "failed" and prev_status != "failed":
         kuma_push("down", f"weather-report failed day_epoch={d} (TTL {PENDING_TTL_RUNS})")
+    if status == "sent" and prev_status != "sent":
+        # U8.3: ok-push на успешную доставку/восстановление (механизм M6,
+        # тот же push-URL): молчание Kuma = инцидент
+        kuma_push("up", f"weather-report sent day_epoch={d} (attempts={attempts})")
     return status
 
 
@@ -1039,6 +1063,25 @@ def run_regenerate_day(con, cfg, day_epoch):
     return run_regenerate(con, cfg, row)
 
 
+def run_retry_pending(con, cfg):
+    """U8.3 --retry-pending: ТОЛЬКО досылка всех pending_retry (для
+    hourly-таймера weather-report-retry), БЕЗ генерации текущего дня.
+    Семантика §3.3 — тот же deliver(): один круг in-run попыток на строку,
+    +1 прогон к attempts, TTL/failed/Kuma без изменений; нарратив берётся
+    из строки (LLM зовётся только на NULL/NULL). Нет pending_retry →
+    без действий, exit 0."""
+    rows = con.execute("SELECT * FROM reports WHERE delivery_status='pending_retry' "
+                       "ORDER BY generated_at, id").fetchall()
+    log(f"--retry-pending: pending_retry строк: {len(rows)}")
+    for row in rows:
+        msgs, upd = message_for_row(con, row, cfg)
+        if upd:
+            apply_llm_update(con, row["id"], upd)
+            row = refetch(con, row["id"])
+        deliver(con, row, cfg, msgs)
+    return 0
+
+
 def run_dry(con, now):
     """§5.3 m-4: --dry-run — без LLM и доставки; печатает facts JSON +
     заполненный шаблон; exit 0. Только чтение (mode=ro, без lock/записей)."""
@@ -1073,14 +1116,18 @@ def main(argv=None):
                         "NULL, новых строк не создаёт)")
     p.add_argument("--regenerate", type=int, metavar="DAY_EPOCH",
                    help="повторить LLM-шаг строки конкретного дня (U8.1)")
+    p.add_argument("--retry-pending", action="store_true",
+                   help="только досылка pending_retry, без генерации текущего "
+                        "дня (U8.3, для weather-report-retry.timer)")
     p.add_argument("--db", default=os.environ.get("WEATHER_REPORT_DB") or DEFAULT_DB,
                    help=argparse.SUPPRESS)  # тестовые стенды; прод — дефолт
     args = p.parse_args(argv)
     chosen = [args.resend_last, args.resend is not None,
-              args.regenerate_last, args.regenerate is not None]
+              args.regenerate_last, args.regenerate is not None,
+              args.retry_pending]
     if sum(bool(x) for x in chosen) > 1:
-        print("флаги --resend-last/--resend/--regenerate-last/--regenerate "
-              "взаимоисключающие", file=sys.stderr)
+        print("флаги --resend-last/--resend/--regenerate-last/--regenerate/"
+              "--retry-pending взаимоисключающие", file=sys.stderr)
         return 2
 
     if args.dry_run:
@@ -1115,6 +1162,8 @@ def main(argv=None):
             return run_regenerate_last(con, cfg)
         if args.regenerate is not None:
             return run_regenerate_day(con, cfg, args.regenerate)
+        if args.retry_pending:
+            return run_retry_pending(con, cfg)
         # §4.3 шаг 4: досылка pending_retry (чужих дней), затем генерация за D
         resend_pending(con, cfg, exclude_day=d)
         return run_generation(con, cfg, d, now)
