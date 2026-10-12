@@ -1,0 +1,10 @@
+[Unit]
+Description=Remote meteo backup daily 06:55 MSK (after snapshot 06:40)
+
+[Timer]
+OnCalendar=*-*-* 06:55:00 Europe/Moscow
+Persistent=true
+Unit=weather-remote-backup.service
+
+[Install]
+WantedBy=timers.target
