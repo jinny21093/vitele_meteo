@@ -11,8 +11,12 @@ LATEST=$(ls -t "$SRC_DB"weather-*.db.gz 2>/dev/null | head -1)
 [ -n "$LATEST" ] || { echo "$(date '+%F %T') FAIL no local snapshot" >> "$LOG"; exit 1; }
 # вывоз БД: только свежайший файл (история уже там, инкрементально)
 rsync -a --timeout=120 "$LATEST" "$DEST/db/"
-# вывоз конфигов/скриптов (файлы кода и конфигов, БЕЗ бэкап-мусора)
+# вывоз конфигов/скриптов (файлы кода и конфигов, БЕЗ бэкап-мусора).
+# .backup-* исключается ДО include='*/': в rsync первое совпадение
+# фильтра побеждает, иначе include каталогов проглотит исключение
+# (по ОК владельца 2026-10-12).
 rsync -a --timeout=120 \
+  --exclude='.backup-*' \
   --include='*/' --include='*.py' --include='*.sh' \
   --include='*.service' --include='*.timer' --include='*.env' \
   --include='*.conf' --include='*.sql' --exclude='*' \
