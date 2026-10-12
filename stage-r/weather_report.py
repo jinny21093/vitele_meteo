@@ -1,6 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.2.1).
+"""weather_report.py — U8 «Суточный ИИ-отчёт» (v1.3.0).
+
+v1.3.0 (U8.5, «второй шанс нарративу» — решение владельца 2026-10-12,
+директива «пока не получил ответ — пусть запрашивает»):
+  • Проблема: слот 07:20 МСК = полдень Пекина; free-тир Z.ai отвечал
+    HTTP 429 (код 1305, перегрузка) 5+ утр подряд; по канону 4xx без
+    retry, а retry-контур LLM не зовёт (MAJ-5) — нарратив не появлялся
+    НИКОГДА без ручного --regenerate, владелец получал сухую сводку.
+  • Решение: --retry-pending (hourly-таймер *:05) ПОСЛЕ досылки
+    pending_retry выполняет второй шанс: для СВЕЖИХ строк
+    (llm_text IS NULL, llm_error задан, день в окне D-2…D,
+    n_samples>0, delivery_status ≠ failed) — ОДИН LLM-вызов за прогон
+    по канону §2; успех → нарратив в БД + доставка пары §3.3;
+    отказ → строка остаётся на fallback, повтор на следующем часовом
+    прогоне — «пока не получит ответ, пусть запрашивает».
+  • Ограничители (защита free-квоты): ≤6 LLM-попыток на строку,
+    пауза ≥30 мин между попытками строки, ОДИН вызов за прогон,
+    MAJ-5 в основном потоке НЕ тронут (message_for_row как раньше
+    не зовёт LLM на llm_error-строке). Счётчик попыток — state-файл
+    report_second_chance.json (атомарная запись, записи >7 суток
+    чистятся; схема БД НЕ расширяется — прецедент reasoning_tokens).
+  • Kuma: переходов статусов доставки второй шанс не создаёт
+    (prev sent → sent — без push; prev pending_retry → sent — штатный
+    ok-push §3.3). Юнит weather-report-retry: TimeoutStartSec 300→600
+    (худший круг: досылка + LLM + доставка пары).
 
 v1.2.1 (U8.4, литературный нарратив — решение владельца о продукте):
   • Продукт: ДВЕ отправки с разными ролями — шапка = приборы (SQL,
@@ -123,7 +147,7 @@ import time
 import urllib.error
 import urllib.request
 
-WEATHER_REPORT_VERSION = "1.2.1"
+WEATHER_REPORT_VERSION = "1.3.0"
 DEFAULT_DB = "/home/auditbot/weather-dash/weather.db"
 LOCK_PATH = "/var/lock/weather-report.lock"
 LOCK_TIMEOUT_S = 150          # §4.2: блокирующий flock с таймаутом 150с
@@ -152,6 +176,15 @@ TG_ATTEMPTS = 3
 TG_BACKOFF_S = (2, 8, 30)
 TG_TIMEOUT_S = 15             # env-оверрайд TG_TIMEOUT_S — только для стендов
 PENDING_TTL_RUNS = 3          # pending_retry живёт ≤3 прогонов, на 4-й — failed
+# §4.6 (U8.5 «второй шанс нарративу»): параметры повторных LLM-попыток
+# на hourly-прогоне --retry-pending. Счётчик попыток — state-файл
+# (env-оверрайд SECOND_CHANCE_STATE — для тестовых стендов); схема БД
+# не расширяется (прецедент reasoning_tokens, §2.2).
+SC_STATE_DEFAULT = "/home/auditbot/weather-dash/report_second_chance.json"
+SC_MAX_AGE_DAYS = 2           # окно свежести: строки за D-2 … D (D — день отчёта)
+SC_MAX_ATTEMPTS = 6           # лимит LLM-попыток на строку
+SC_MIN_GAP_S = 1800           # пауза между попытками одной строки (30 мин)
+SC_STATE_TTL_S = 7 * 86400    # записи state-файла старше 7 суток чистятся
 # §3.5 (v1.2.1/U8.4): enum причин отказа — 5 значений; invalid_numbers
 # удалён (нарратив без побуквенного контроля чисел). Исторические строки
 # БД могут хранить старое значение — fallback_message рендерит как есть.
@@ -1017,13 +1050,113 @@ def run_regenerate_day(con, cfg, day_epoch):
     return run_regenerate(con, cfg, row)
 
 
-def run_retry_pending(con, cfg):
-    """U8.3 --retry-pending: ТОЛЬКО досылка всех pending_retry (для
-    hourly-таймера weather-report-retry), БЕЗ генерации текущего дня.
-    Семантика §3.3 — тот же deliver(): один круг in-run попыток на строку,
-    +1 прогон к attempts, TTL/failed/Kuma без изменений; нарратив берётся
-    из строки (LLM зовётся только на NULL/NULL). Нет pending_retry →
-    без действий, exit 0."""
+# --- §4.6 U8.5: второй шанс нарративу -------------------------------------------
+def sc_state_path():
+    """State-файл счётчика попыток (env-оверрайд SECOND_CHANCE_STATE —
+    тестовые стенды; прод — дефолт рядом с БД)."""
+    return os.environ.get("SECOND_CHANCE_STATE") or SC_STATE_DEFAULT
+
+
+def load_sc_state():
+    """{day_epoch_str: {attempts, last_ts, last_error}}; битый/чужой файл —
+    как пустой (второй шанс — оптимизация, не источник отказов прогона)."""
+    try:
+        with open(sc_state_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sc_state(state, now=None):
+    """Атомарная запись (tmp+rename) с чисткой записей старше 7 суток:
+    файл не растёт, старые дни не возвращаются в работу (см. окно
+    свежести SC_MAX_AGE_DAYS — попытки и так ограничены). Чистка —
+    по часам прогона (now из now_epoch(): в тестах зафиксирован —
+    детерминизм; прод — реальные часы)."""
+    now = int(now if now is not None else time.time())
+    pruned = {k: v for k, v in state.items()
+              if isinstance(v, dict)
+              and now - int(v.get("last_ts") or 0) < SC_STATE_TTL_S}
+    path = sc_state_path()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(pruned, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def second_chance(con, cfg, now):
+    """U8.5 «второй шанс нарративу» (§4.6): директива владельца «пока не
+    получил ответ — пусть запрашивает». На hourly-прогоне --retry-pending
+    для СВЕЖИХ сломанных строк (llm_text IS NULL, llm_error задан,
+    день в окне D-2…D, n_samples>0, delivery_status ≠ failed) — ОДИН
+    LLM-вызов за прогон по канону §2 (то же request shape, те же
+    проверки §2.5). Успех → llm_* в БД + доставка пары §3.3 (шапка+
+    нарратив — строка уже отправляла fallback-шапку; пара самодостаточна,
+    прецедент — приёмка U8.4). Отказ → строка остаётся как есть,
+    повтор на следующем часовом прогоне. Ограничители: ≤SC_MAX_ATTEMPTS
+    попыток на строку, пауза ≥SC_MIN_GAP_S между попытками, счётчик —
+    state-файл (запись ДО вызова LLM: крах процесса не зациклит попытки).
+    Кандидаты перебираются от свежих к старым; блокированные
+    (лимит/пауза) пропускаются — вызов достаётся первому доступному.
+    MAJ-5 не тронут: message_for_row по-прежнему не зовёт LLM на
+    llm_error-строке — второй шанс живёт ТОЛЬКО здесь."""
+    d = d_epoch_of(now)
+    min_day = d - SC_MAX_AGE_DAYS * 86400
+    rows = con.execute(
+        "SELECT * FROM reports WHERE llm_text IS NULL AND llm_error IS NOT NULL "
+        "AND delivery_status <> 'failed' AND day_epoch >= ? "
+        "ORDER BY day_epoch DESC, id DESC", (min_day,)).fetchall()
+    if not rows:
+        log("second chance: кандидатов нет")
+        return
+    state = load_sc_state()
+    for row in rows:
+        dl = day_label(row["day_epoch"])
+        dkey = str(row["day_epoch"])
+        st = state.get(dkey) if isinstance(state.get(dkey), dict) else {}
+        attempts = int(st.get("attempts") or 0)
+        if attempts >= SC_MAX_ATTEMPTS:
+            log(f"second chance: {dl}: лимит {SC_MAX_ATTEMPTS} попыток исчерпан — "
+                f"восстановление вручную (--regenerate)")
+            continue
+        gap_left = SC_MIN_GAP_S - (now - int(st.get("last_ts") or 0))
+        if gap_left > 0:
+            log(f"second chance: {dl}: пауза между попытками не вышла "
+                f"({gap_left // 60} мин) — пропускаю")
+            continue
+        facts = json.loads(row["facts_json"])
+        if int(facts.get("n_samples") or 0) == 0:
+            continue  # пустой день — нарратива не бывает (тест 15)
+        log(f"second chance: {dl} (прошлый вердикт {row['llm_error']}) — "
+            f"попытка {attempts + 1}/{SC_MAX_ATTEMPTS}")
+        state[dkey] = {"attempts": attempts + 1, "last_ts": int(now),
+                       "last_error": row["llm_error"]}
+        save_sc_state(state, now)
+        try:
+            res = call_llm(cfg, facts)
+        except LLMRefusal as e:
+            log(f"second chance: LLM отказ ({e.reason}) — повтор на следующем "
+                f"часовом прогоне")
+            state[dkey]["last_error"] = e.reason
+            save_sc_state(state, now)
+            return  # один LLM-вызов за прогон — бережём free-квоту
+        apply_llm_update(con, row["id"], {
+            "llm_text": res["llm_text"], "llm_model": res["llm_model"],
+            "llm_tokens_in": res["llm_tokens_in"],
+            "llm_tokens_out": res["llm_tokens_out"], "llm_error": None})
+        row = refetch(con, row["id"])
+        log("second chance: нарратив получен — доставка пары §3.3")
+        deliver(con, row, cfg, [(header_markdown(facts), True),
+                                (res["llm_text"], False)])
+        return  # один LLM-вызов за прогон
+
+
+def run_retry_pending(con, cfg, now):
+    """U8.3 --retry-pending: досылка всех pending_retry; U8.5 (v1.3.0):
+    после досылки — второй шанс нарративу (§4.6, один LLM-вызов за прогон
+    для свежей сломанной строки). Для hourly-таймера
+    weather-report-retry; генерация НОВОГО дня по-прежнему отсутствует."""
     rows = con.execute("SELECT * FROM reports WHERE delivery_status='pending_retry' "
                        "ORDER BY generated_at, id").fetchall()
     log(f"--retry-pending: pending_retry строк: {len(rows)}")
@@ -1033,6 +1166,7 @@ def run_retry_pending(con, cfg):
             apply_llm_update(con, row["id"], upd)
             row = refetch(con, row["id"])
         deliver(con, row, cfg, msgs)
+    second_chance(con, cfg, now)
     return 0
 
 
@@ -1058,7 +1192,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         prog="weather-report",
         description=f"U8 «Суточный ИИ-отчёт» v{WEATHER_REPORT_VERSION} "
-                    f"(спека weather-report v1.1.1)")
+                    f"(спека weather-report v1.3.0)")
     p.add_argument("--dry-run", action="store_true",
                    help="без LLM и доставки: facts JSON + заполненный шаблон")
     p.add_argument("--resend-last", action="store_true",
@@ -1071,8 +1205,9 @@ def main(argv=None):
     p.add_argument("--regenerate", type=int, metavar="DAY_EPOCH",
                    help="повторить LLM-шаг строки конкретного дня (U8.1)")
     p.add_argument("--retry-pending", action="store_true",
-                   help="только досылка pending_retry, без генерации текущего "
-                        "дня (U8.3, для weather-report-retry.timer)")
+                   help="досылка pending_retry + второй шанс нарративу (U8.5: "
+                        "один LLM-вызов за прогон для свежей сломанной "
+                        "строки; для weather-report-retry.timer)")
     p.add_argument("--db", default=os.environ.get("WEATHER_REPORT_DB") or DEFAULT_DB,
                    help=argparse.SUPPRESS)  # тестовые стенды; прод — дефолт
     args = p.parse_args(argv)
@@ -1117,7 +1252,7 @@ def main(argv=None):
         if args.regenerate is not None:
             return run_regenerate_day(con, cfg, args.regenerate)
         if args.retry_pending:
-            return run_retry_pending(con, cfg)
+            return run_retry_pending(con, cfg, now)
         # §4.3 шаг 4: досылка pending_retry (чужих дней), затем генерация за D
         resend_pending(con, cfg, exclude_day=d)
         return run_generation(con, cfg, d, now)

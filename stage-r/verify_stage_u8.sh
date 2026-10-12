@@ -4,12 +4,11 @@
 # нумерация, режимы).
 #
 # Режимы (первый параметр):
-#   local   — клон репо + приёмочные тесты stage-r/test_u8.py (v1.2.1/U8.4:
-#             42 теста — инварианты, сценарии §7.2 на моках, смоуки §7.3
-#             + s6 литературный нарратив; юнит-пары §7.1 удалены вместе
-#             с чекером) + --dry-run на копии живой БД (SRC_DB) + контроль
-#             миграции. Живая БД только ЧИТАЕТСЯ (mode=ro); записи — только
-#             в tmp.
+#   local   — клон репо + приёмочные тесты stage-r/test_u8.py (v1.3.0/U8.5:
+#             47 тестов — инварианты, сценарии §7.2 на моках, смоуки §7.3
+#             + s6 литературный нарратив + 34–38 второй шанс) + --dry-run
+#             на копии живой БД (SRC_DB) + контроль миграции. Живая БД
+#             только ЧИТАЕТСЯ (mode=ro); записи — только в tmp.
 #   deploy  — живая VM: ТОЛЬКО read-only проверки (юнит/таймер active,
 #             journalctl без секретов и без ERROR, таблица reports и
 #             schema_migrations.version=4, --dry-run на живой БД).
@@ -68,8 +67,8 @@ else
 fi
 
 if [[ "$MODE" == "local" ]]; then
-  # --- L1. Приёмочные тесты (42 после U8.4) ---
-  echo "== L1. Приёмочные тесты stage-r/test_u8.py (инварианты + §7.2 + §7.3 + U8.4 s6) =="
+  # --- L1. Приёмочные тесты (47 после U8.5) ---
+  echo "== L1. Приёмочные тесты stage-r/test_u8.py (инварианты + §7.2 + §7.3 + U8.4 s6 + U8.5 34–38) =="
   if python3 "$REPO_DIR/stage-r/test_u8.py" > /tmp/u8_verify_tests.log 2>&1; then
     ok "test_u8.py: $(grep -E '^Ran ' /tmp/u8_verify_tests.log), вердикт: $(grep -E '^(OK|FAILED)' /tmp/u8_verify_tests.log | head -1)"
   else
@@ -144,9 +143,9 @@ if [[ "$MODE" == "deploy" ]]; then
   systemctl is-active --quiet weather-report.timer \
     && ok "weather-report.timer active" || bad "weather-report.timer не active"
   systemctl cat weather-report.timer 2>/dev/null | grep -q \
-    "OnCalendar=\*-\*-\* 06:50:00 Europe/Moscow" \
-    && ok "OnCalendar=*-*-* 06:50:00 Europe/Moscow" \
-    || bad "OnCalendar таймера не совпал"
+    "OnCalendar=\*-\*-\* 07:20:00 Europe/Moscow" \
+    && ok "OnCalendar=*-*-* 07:20:00 Europe/Moscow" \
+    || bad "OnCalendar таймера не совпал (ожидается 07:20 — U8.3)"
   systemctl cat weather-report.service 2>/dev/null | grep -q "Nice=19" \
     && ok "Nice=19" || bad "Nice=19 не найден"
   systemctl cat weather-report.service 2>/dev/null | grep -q "TimeoutStartSec=300" \

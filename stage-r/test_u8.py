@@ -13,7 +13,10 @@
                      спеки, пропуски 6/20/26 — удалённые тесты
                      invalid_numbers-ветки (U8.4) + смоуки §7.3
                      (test_s1…test_s5; бюджет Z.ai — ручной после деплоя)
-                     + test_s6 (U8.4: округлённый нарратив проходит).
+                     + test_s6 (U8.4: округлённый нарратив проходит)
+                     + test_34…38 (U8.5: второй шанс нарративу — §4.6:
+                     восстановление, отказ+пауза, лимит, окно свежести,
+                     один вызов за прогон).
 
 Секреты: только тестовые значения (фейковый токен/ключ), в лог не попадают.
 """
@@ -187,6 +190,9 @@ def make_env(db, kuma_conf):
         "LLM_TIMEOUT_S": "20",
         "TG_TIMEOUT_S": "10",
         "WEATHER_REPORT_DB": db,
+        # U8.5: state-файл второго шанса — в tmp (рядом с тестовой БД),
+        # иначе тесты трогали бы продовый report_second_chance.json
+        "SECOND_CHANCE_STATE": os.path.join(os.path.dirname(db), "sc_state.json"),
     }
 
 
@@ -751,6 +757,133 @@ class U8ScenarioTests(U8Base):
         kq = stats(KUMA.port)["queries"]
         self.assertEqual(len(kq), 2, "успешная досылка sent-строки — тоже ok-push")
         self.assertTrue(all("status=up" in x for x in kq), "down-ов нет")
+
+    # --- U8.5: второй шанс нарративу (§4.6) ---------------------------------
+    def _broken_row(self):
+        # утренний 429-сценарий: gen() с падающим LLM → sent-строка с
+        # fallback-шапкой, llm_text NULL, llm_error задан; LLM-мок реабилитирован
+        control(LLM.port, {"target": "llm", "http_status": 429, "fail_always": True})
+        p = self.gen()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        row = self.rows()[0]
+        self.assertIsNone(row["llm_text"])
+        self.assertEqual(row["llm_error"], "provider_unreachable")
+        self.assertEqual(row["delivery_status"], "sent")
+        control(LLM.port, {"action": "reset"})
+        return row
+
+    def _sc_state(self):
+        with open(os.path.join(self.work, "sc_state.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_34_second_chance_recovers(self):
+        # свежая сломанная строка: retry-прогон зовёт LLM ровно 1 раз,
+        # нарратив в БД + доставка пары §3.3, счётчик попыток = 1,
+        # Kuma молчит (sent→sent — перехода нет)
+        self._broken_row()
+        kq_before = stats(KUMA.port)["queries"]
+        tg_before = stats(TG.port)["requests"]
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("second chance", p.stdout)
+        self.assertEqual(stats(LLM.port)["requests"], 1,
+                         "ровно один LLM-вызов за прогон")
+        row = self.rows()[0]
+        self.assertIsNotNone(row["llm_text"])
+        self.assertIsNone(row["llm_error"])
+        self.assertEqual(row["llm_model"], "glm-4.7-flash")
+        self.assertEqual(row["delivery_status"], "sent")
+        tg = stats(TG.port)
+        self.assertEqual(tg["requests"], tg_before + 2, "шапка + нарратив")
+        self.assertEqual(tg["bodies"][-1]["body"]["text"], row["llm_text"])
+        self.assertEqual(len(stats(KUMA.port)["queries"]), len(kq_before),
+                         "sent→sent — push-ей нет")
+        st = self._sc_state()
+        self.assertEqual(st[str(D)]["attempts"], 1)
+        self.assertEqual(st[str(D)]["last_error"], "provider_unreachable")
+
+    def test_35_second_chance_refusal_counts_and_gaps(self):
+        # LLM отказ (429): попытка посчитана (state), строка не тронута,
+        # доставка молчит; немедленный повтор заблокирован 30-мин паузой
+        self._broken_row()
+        tg_before = stats(TG.port)["requests"]
+        control(LLM.port, {"target": "llm", "http_status": 429, "fail_always": True})
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("LLM отказ (provider_unreachable)", p.stdout)
+        row = self.rows()[0]
+        self.assertIsNone(row["llm_text"])
+        self.assertEqual(row["delivery_status"], "sent")
+        self.assertEqual(stats(TG.port)["requests"], tg_before,
+                         "доставка при отказе не запускалась")
+        st = self._sc_state()
+        self.assertEqual(st[str(D)]["attempts"], 1)
+        self.assertEqual(st[str(D)]["last_error"], "provider_unreachable")
+        # немедленный второй прогон: пауза 30 мин не вышла → LLM не зовётся
+        llm_after = stats(LLM.port)["requests"]
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("пауза между попытками не вышла", p.stdout)
+        self.assertEqual(stats(LLM.port)["requests"], llm_after,
+                         "gapping блокирует вызов")
+
+    def test_36_second_chance_cap_six(self):
+        # исчерпан лимит 6 попыток на строку → LLM/доставка молчат,
+        # подсказка про ручное --regenerate
+        self._broken_row()
+        tg_before = stats(TG.port)["requests"]
+        with open(os.path.join(self.work, "sc_state.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({str(D): {"attempts": 6, "last_ts": PINNED_NOW - 3600,
+                                "last_error": "provider_unreachable"}}, f)
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("лимит 6 попыток исчерпан", p.stdout)
+        self.assertEqual(stats(LLM.port)["requests"], 0)
+        self.assertEqual(stats(TG.port)["requests"], tg_before)
+        self.assertIsNone(self.rows()[0]["llm_text"])
+
+    def test_37_second_chance_window_excludes_old(self):
+        # строка за D-3 — вне окна свежести D-2…D → не кандидат; вызов
+        # достаётся свежей строке; старая остаётся сломанной
+        self._broken_row()
+        old_day = D - 3 * 86400
+        w(self.db, "INSERT INTO reports(day_epoch, generated_at, facts_json, "
+                   "llm_error, delivery_status, delivery_attempts, "
+                   "idempotency_key, schema_version) VALUES(?,?,?,?,?,1,?,1)",
+          (old_day, PINNED_NOW, self.rows()[0]["facts_json"],
+           "provider_unreachable", "sent", f"{old_day}:100500"))
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(stats(LLM.port)["requests"], 1)
+        self.assertIn("second chance: "
+                      + time.strftime("%d.%m", time.gmtime(D + TZ)), p.stdout,
+                      "вызов достался свежей строке")
+        old = q(self.db, "SELECT * FROM reports WHERE day_epoch=?", (old_day,))[0]
+        self.assertIsNone(old["llm_text"], "вне окна — не тронута")
+        self.assertEqual(old["llm_error"], "provider_unreachable")
+
+    def test_38_second_chance_one_call_newest_first(self):
+        # две сломанные строки в окне: ОДИН вызов за прогон — свежей;
+        # вторая ждёт следующего часового прогона
+        self._broken_row()
+        d1 = D - 86400
+        w(self.db, "INSERT INTO reports(day_epoch, generated_at, facts_json, "
+                   "llm_error, delivery_status, delivery_attempts, "
+                   "idempotency_key, schema_version) VALUES(?,?,?,?,?,1,?,1)",
+          (d1, PINNED_NOW - 86400, self.rows()[0]["facts_json"],
+           "timeout", "sent", f"{d1}:100500"))
+        p = run_report(["--retry-pending"], self.env)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(stats(LLM.port)["requests"], 1,
+                         "ровно один LLM-вызов за прогон")
+        fixed = q(self.db, "SELECT * FROM reports WHERE day_epoch=?", (D,))[0]
+        self.assertIsNotNone(fixed["llm_text"], "свежая закрыта первой")
+        left = q(self.db, "SELECT * FROM reports WHERE day_epoch=?", (d1,))[0]
+        self.assertIsNone(left["llm_text"], "старшая ждёт следующего прогона")
+        st = self._sc_state()
+        self.assertIn(str(D), st)
+        self.assertNotIn(str(d1), st)
 
     # --- §7.3 smoke (test_s1…test_s5) + U8.4 (test_s6) ------------------------
     def test_s1_dry_run(self):

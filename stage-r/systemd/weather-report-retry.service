@@ -1,5 +1,5 @@
 [Unit]
-Description=Weather report retry: досылка pending_retry без генерации (U8.3 --retry-pending)
+Description=Weather report retry: досылка pending_retry + второй шанс нарративу (U8.3/U8.5 --retry-pending)
 After=network-online.target
 Wants=network-online.target
 OnFailure=weather-report-alert.service
@@ -10,7 +10,8 @@ User=auditbot
 WorkingDirectory=/home/auditbot/weather-dash
 EnvironmentFile=/home/auditbot/weather-dash/report.env
 Nice=19
-TimeoutStartSec=300
+# U8.5: худший круг = досылка pending (до ~90 с) + LLM (до ~190 с) + доставка пары (до ~90 с)
+TimeoutStartSec=600
 ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/weather_report.py --retry-pending
 
 [Install]
