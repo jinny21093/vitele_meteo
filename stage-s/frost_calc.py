@@ -1,12 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""frost_calc.py — ночной заморозочный дежурный (v1.0.0, stdlib-only).
+"""frost_calc.py — ночной заморозочный дежурный (v1.1.0, stdlib-only).
 
 Режимы (systemd-шаблон weather-frost@<mode>.service):
   --evening   21:30  первичная оценка предстоящей ночи (методы A/B/A2)
   --midnight  00:10  контроль: расхождение факт-vs-модель, уточнение вердикта
   --verify    09:30  факт прошедшей ночи -> frost_log.csv (обучение),
-                     Kuma обратно в green, TG-итог если риск объявлялся
+                     сезонные счётчики, Kuma обратно в green
+  --set K=V          ручной оверрайд сезонного контура:
+                     season=garden|winter | digest=on|off |
+                     frost_streak=N | thaw_streak=N
+
+Сезонный контур (v1.1.0, «дача в холодном останове»):
+  garden — осенний режим: алерты заморозка как в v1.0.1 (Kuma down + TG)
+  winter — тихий дежурный: ночные сводки молчат (Kuma up), TG-алерт только
+           на аномалии:
+             * Tmin (прогноз или факт) <= DEEP_COLD (-25°) — аномальный мороз
+             * промах прогноза >= MISS_ALERT (5°) — дрейф/сбой
+             * станция молчит > STALE_H (3 ч) — поллер/датчик (раз в сутки)
+  переходы (по факту, решает verify):
+             garden->winter: 5 ночей подряд факт Tmin <= -2°
+             winter->garden: 5 ночей подряд факт Tmin >= 0° И месяц >= апреля
+  Kuma-push идёт каждый проход — монитор 77 = пульс дежурного:
+  если vitele/скрипт умрёт, Kuma поднимет тревогу по отсутствию push.
 
 Источники:
   станция : /home/auditbot/weather-dash/weather.db (sqlite, read-only)
@@ -49,7 +65,17 @@ OM_HOST, OM_PIN = "api.open-meteo.com", "5.9.98.12"
 BIAS_RAD, BIAS_CLD = -2.9, -0.6
 TAU_B, TEQ_OFF, MIN_BEFORE_SUNRISE = 2.5, 2.0, 2.4
 SURFACE_OFF = 2.5
-VERSION = "1.0.1"
+VERSION = "1.1.0"
+
+# --- сезонный контур (v1.1.0) ---
+W_ENTER_N = 5          # ночей подряд Tmin <= W_ENTER_T -> winter
+W_ENTER_T = -2.0
+W_EXIT_N = 5           # ночей подряд Tmin >= W_EXIT_T -> garden
+W_EXIT_T = 0.0
+W_EXIT_MONTH = 4       # winter->garden не раньше апреля (анти-флип-флоп)
+DEEP_COLD = -25.0      # аномальный мороз — зимний алерт
+MISS_ALERT = 5.0       # промах прогноза >= 5° — дрейф/сбой, алерт в любом сезоне
+STALE_H = 3.0          # станция молчит > 3 ч — алерт раз в сутки
 
 LOG_HEADER = ["date", "label", "pred_evening", "pred_midnight", "pred_used",
               "risk", "om_tmin", "fact_tmin", "fact_at", "bias_fact_pred",
@@ -404,16 +430,89 @@ def log_append(row):
         w.writerow([row.get(k, "") for k in LOG_HEADER])
 
 
+# ------------------------------------------------ сезонный контур v1.1.0 ---
+
+def state_defaults(st):
+    """Дефолты v1.1.0 — state, собранный старой версией, достраивается."""
+    if st is None:
+        st = {}
+    st.setdefault("season", "garden")
+    st.setdefault("frost_streak", 0)
+    st.setdefault("thaw_streak", 0)
+    st.setdefault("winter_digest", False)
+    st.setdefault("stale_alert_date", None)
+    st.setdefault("deep_alert_night", None)
+    return st
+
+
+def season_update(st, fact_tmin, date_str):
+    """Сезонные счётчики по факту ночи. Возвращает 'winter'/'garden'/None.
+    frost_streak: ночи подряд с Tmin <= W_ENTER_T; thaw_streak: >= W_EXIT_T.
+    Возврат в garden — только с W_EXIT_MONTH (февральские оттепели молчат)."""
+    if fact_tmin is None:
+        return None
+    if fact_tmin <= W_ENTER_T:
+        st["frost_streak"] = st.get("frost_streak", 0) + 1
+    else:
+        st["frost_streak"] = 0
+    if fact_tmin >= W_EXIT_T:
+        st["thaw_streak"] = st.get("thaw_streak", 0) + 1
+    else:
+        st["thaw_streak"] = 0
+    season = st.get("season", "garden")
+    if season == "garden" and st["frost_streak"] >= W_ENTER_N:
+        st["season"] = "winter"
+        return "winter"
+    if (season == "winter" and st["thaw_streak"] >= W_EXIT_N
+            and int(date_str[5:7]) >= W_EXIT_MONTH):
+        st["season"] = "garden"
+        return "garden"
+    return None
+
+
+def stale_check(con, st, dry):
+    """Станция молчит > STALE_H -> TG раз в сутки (слепой дежурный = ноль)."""
+    try:
+        last = st_last(con)
+    except Exception as e:
+        say("[DUTY] станция недоступна: %s" % e)
+        return
+    ts_dt = datetime.fromtimestamp(last["ts"], MSK)
+    age_h = (now_msk() - ts_dt).total_seconds() / 3600.0
+    if age_h <= STALE_H:
+        return
+    today = now_msk().strftime("%Y-%m-%d")
+    if st.get("stale_alert_date") == today:
+        say("[DUTY] станция молчит %.1f ч (алерт за %s уже уходил)" % (age_h, today))
+        return
+    say("[DUTY] станция молчит %.1f ч (последняя точка %s)" % (
+        age_h, ts_dt.strftime("%d.%m %H:%M")))
+    tg_send("[DUTY] Станция молчит %.1f ч (последняя точка %s МСК). "
+            "Поллер/датчик/сеть — проверю на следующих проходах." % (
+                age_h, ts_dt.strftime("%d.%m %H:%M")), dry)
+    st["stale_alert_date"] = today
+
+
+def winter_quiet(a):
+    return ("зима | %s: Tmin ~%+.1f° (%+.1f..%+.1f) @~%s — тихо, "
+            "алерт только при Tmin <= %+.0f°" % (
+                a["night_label"], a["pred"], a["corridor"][0],
+                a["corridor"][1], a["tmin_at"], DEEP_COLD))
+
+
 # ------------------------------------------------------------------ режимы --
 
 def run_evening(dry):
     con = db_connect()
     om = om_fetch()
     now = now_msk()
-    start_date = evening_anchor(load_state())
+    st = state_defaults(load_state())
+    stale_check(con, st, dry)
+    season = st["season"]
+    start_date = evening_anchor(st)
     a = assess(con, om, start_date)
-    say("=== РЕЖИМ EVENING %s | ночь %s | %s ===" % (
-        VERSION, a["night_label"], now.strftime("%d.%m %H:%M")))
+    say("=== РЕЖИМ EVENING %s | ночь %s | %s | сезон %s ===" % (
+        VERSION, a["night_label"], now.strftime("%d.%m %H:%M"), season))
     say("станция: T %+.1f Td %+.1f ветер %.2f | OM сейчас %+.1f -> расхождение %s" % (
         a["station"]["T"], a["station"]["Td"] or -99, a["station"]["w"] or -1,
         a["om"]["om_now_T"] if a["om"]["om_now_T"] is not None else -99,
@@ -426,32 +525,54 @@ def run_evening(dry):
     say("ВЕРДИКТ: %s, Tmin %+.1f (%+.1f..%+.1f) @~%s, поверхность %+.1f" % (
         RISK_TXT[a["risk"]], a["pred"], a["corridor"][0], a["corridor"][1],
         a["tmin_at"], a["surface"]))
-    st = {"version": VERSION, "mode": "evening",
-          "ts": now.strftime("%Y-%m-%d %H:%M"), "night": a,
-          "pred_evening": a["pred"], "pred_midnight": None,
-          "pred_used": a["pred"], "risk": a["risk"]}
+    st.update({"version": VERSION, "mode": "evening",
+               "ts": now.strftime("%Y-%m-%d %H:%M"), "night": a,
+               "pred_evening": a["pred"], "pred_midnight": None,
+               "pred_used": a["pred"], "risk": a["risk"]})
     save_state(st)
-    if a["risk"] == "none":
-        kuma_push("up", "нет заморозка (%s): Tmin>+%s" % (
-            a["night_label"], a["pred"]), dry)
-    else:
-        kuma_push("down", verdict_text(a).replace("[FROST] ", ""), dry)
-        tg_send(verdict_text(a), dry)
+    if season == "garden":
+        if a["risk"] == "none":
+            kuma_push("up", "нет заморозка (%s): Tmin>+%s" % (
+                a["night_label"], a["pred"]), dry)
+        else:
+            kuma_push("down", verdict_text(a).replace("[FROST] ", ""), dry)
+            tg_send(verdict_text(a), dry)
+    else:  # winter: тихо, алерт только на аномальный мороз
+        if a["pred"] <= DEEP_COLD:
+            txt = verdict_text(a, " аномальный мороз") + (
+                " Порог зимнего алерта: Tmin <= %+.0f°." % DEEP_COLD)
+            kuma_push("down", txt.replace("[FROST] ", ""), dry)
+            tg_send(txt, dry)
+            st["deep_alert_night"] = a["start_date"]
+            save_state(st)
+        else:
+            kuma_push("up", winter_quiet(a), dry)
+            if st.get("winter_digest"):
+                dtx = ("[DUTY|зима] Вечер %s: Tmin ~%+.1f° (%+.1f..%+.1f) @~%s, "
+                       "станция сейчас %+.1f°. Всё тихо." % (
+                           a["night_label"], a["pred"], a["corridor"][0],
+                           a["corridor"][1], a["tmin_at"], a["station"]["T"]))
+                if dry:
+                    say("[TG][dry] зимний дайджест: %s" % dtx)
+                else:
+                    tg_send(dtx)
     con.close()
     return 0
 
 
 def run_midnight(dry):
-    st = load_state()
-    if not st or not st.get("night"):
+    st = state_defaults(load_state())
+    if not st.get("night"):
         say("[X] нет frost_state.json от evening — midnight требует evening-прогон")
         return 1
+    season = st["season"]
     start_date = st["night"]["start_date"]
     con = db_connect()
     om = om_fetch()
+    stale_check(con, st, dry)
     a = assess(con, om, start_date)
-    say("=== РЕЖИМ MIDNIGHT %s | ночь %s | %s ===" % (
-        VERSION, a["night_label"], now_msk().strftime("%d.%m %H:%M")))
+    say("=== РЕЖИМ MIDNIGHT %s | ночь %s | %s | сезон %s ===" % (
+        VERSION, a["night_label"], now_msk().strftime("%d.%m %H:%M"), season))
     say("расхождение факт-модель: %s (правило: <=-0.5 холодный, >=+0.5 облачный)" %
         a["divergence"])
     say("сценарий: %s | активные %s | методы %s" % (
@@ -460,22 +581,37 @@ def run_midnight(dry):
         RISK_TXT[a["risk"]], a["pred"], a["corridor"][0], a["corridor"][1],
         a["tmin_at"], st["pred_evening"]))
     changed = (a["risk"] != st["risk"]) or (abs(a["pred"] - st["pred_evening"]) >= 1.0)
-    st["mode"] = "midnight"
-    st["night"] = a
-    st["pred_midnight"] = a["pred"]
-    st["pred_used"] = a["pred"]
-    st["risk"] = a["risk"]
-    st["ts"] = now_msk().strftime("%Y-%m-%d %H:%M")
+    st.update({"mode": "midnight", "night": a, "pred_midnight": a["pred"],
+               "pred_used": a["pred"], "risk": a["risk"],
+               "ts": now_msk().strftime("%Y-%m-%d %H:%M")})
     save_state(st)
-    if a["risk"] == "none":
-        kuma_push("up", "нет заморозка (%s): Tmin>%+.1f" % (a["night_label"], a["pred"]), dry)
-    else:
-        kuma_push("down", verdict_text(a, " уточнение").replace("[FROST] ", ""), dry)
-    if changed and not dry:
-        tg_send(verdict_text(a, " обновление") +
-                " Вечерняя оценка: %+.1f." % st["pred_evening"])
-    elif changed:
-        say("[TG][dry] изменилось -> отправили бы обновление")
+    if season == "garden":
+        if a["risk"] == "none":
+            kuma_push("up", "нет заморозка (%s): Tmin>%+.1f" % (
+                a["night_label"], a["pred"]), dry)
+        else:
+            kuma_push("down", verdict_text(a, " уточнение").replace("[FROST] ", ""), dry)
+        if changed and not dry:
+            tg_send(verdict_text(a, " обновление") +
+                    " Вечерняя оценка: %+.1f." % st["pred_evening"])
+        elif changed:
+            say("[TG][dry] изменилось -> отправили бы обновление")
+    else:  # winter
+        if (a["pred"] <= DEEP_COLD
+                and st.get("deep_alert_night") != a["start_date"]):
+            txt = verdict_text(a, " аномальный мороз (уточнение)") + (
+                " Порог зимнего алерта: Tmin <= %+.0f°." % DEEP_COLD)
+            kuma_push("down", txt.replace("[FROST] ", ""), dry)
+            tg_send(txt, dry)
+            st["deep_alert_night"] = a["start_date"]
+            save_state(st)
+        elif a["risk"] == "none":
+            kuma_push("up", "зима | %s: Tmin ~%+.1f° — безморозно" % (
+                a["night_label"], a["pred"]), dry)
+        else:
+            kuma_push("up", winter_quiet(a), dry)
+        if changed:
+            say("[MID] уточнение зафиксировано в state (TG зимой молчит)")
     con.close()
     return 0
 
@@ -483,7 +619,7 @@ def run_midnight(dry):
 def run_verify(dry):
     con = db_connect()
     now = now_msk()
-    st = load_state()
+    st = state_defaults(load_state())
     start_date = None
     if st and st.get("night", {}).get("start_date"):
         start_date = st["night"]["start_date"]
@@ -491,16 +627,25 @@ def run_verify(dry):
         start_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     t0 = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=MSK) + timedelta(hours=18)
     t1 = t0 + timedelta(hours=16)
+    # v1.1.0: ночь ещё идёт — факт неполный; журнал/сезонные счётчики/пуши
+    # не трогаем (повторные дневные прогоны не портят frost_log.csv)
+    if now < t1 - timedelta(minutes=30):
+        say("[LOG] ночь %s ещё идёт (окно до %s) — verify без записи и без пушей" % (
+            start_date, t1.strftime("%d.%m %H:%M")))
+        con.close()
+        return 0
+    stale_check(con, st, dry)
     fact = st_night_fact(con, t0.timestamp(), t1.timestamp())
     if not fact:
         say("[X] нет данных станции за ночь %s" % start_date)
+        con.close()
         return 2
     label = "%s->%s" % (t0.strftime("%d.%m"), (t0 + timedelta(days=1)).strftime("%d.%m"))
     pred = st.get("pred_used") if st else None
     om_tmin = st.get("night", {}).get("om", {}).get("tmin") if st else None
     was_risk = st.get("risk") in ("hard", "frost", "risk") if st else False
-    say("=== РЕЖИМ VERIFY %s | ночь %s | %s ===" % (
-        VERSION, label, now.strftime("%d.%m %H:%M")))
+    say("=== РЕЖИМ VERIFY %s | ночь %s | %s | сезон %s ===" % (
+        VERSION, label, now.strftime("%d.%m %H:%M"), st["season"]))
     say("факт: Tmin %+.1f @%s (RH %s%%, Td %+.1f), ветер ночь %.2f м/с, "
         "ниже 0: %s..%s" % (
             fact["tmin"], fact["tmin_at"], fact["tmin_rh"], fact["tmin_td"] or -99,
@@ -511,45 +656,151 @@ def run_verify(dry):
             ("%+.1f" % om_tmin) if om_tmin is not None else "-",
             (fact["tmin"] - om_tmin) if om_tmin is not None else 0))
     note = "ok" if st else "нет state (прогон вечеринки пропущен?)"
-    log_append({
-        "date": start_date, "label": label,
-        "pred_evening": st.get("pred_evening", "") if st else "",
-        "pred_midnight": st.get("pred_midnight", "") if st else "",
-        "pred_used": pred if pred is not None else "",
-        "risk": st.get("risk", "") if st else "",
-        "om_tmin": om_tmin if om_tmin is not None else "",
-        "fact_tmin": fact["tmin"], "fact_at": fact["tmin_at"],
-        "bias_fact_pred": round(fact["tmin"] - pred, 1) if pred is not None else "",
-        "bias_fact_om": round(fact["tmin"] - om_tmin, 1) if om_tmin is not None else "",
-        "wind_night": fact["wind_night"], "cloud_night": "", "note": note,
-    })
-    say("[LOG] строка добавлена в frost_log.csv (%s)" % note)
-    kuma_push("up", "ночь %s: факт Tmin %+.1f @%s (прогноз %s)" % (
-        label, fact["tmin"], fact["tmin_at"],
-        ("%+.1f" % pred) if pred is not None else "n/a"), dry)
-    if was_risk and not dry:
-        msg = ("[FROST] ночь %s: факт Tmin %+.1f° @ %s (прогноз %+.1f, ошибка "
-               "%+.1f°). Поверхность держала ~%+.1f°." % (
-                   label, fact["tmin"], fact["tmin_at"], pred,
-                   fact["tmin"] - pred, fact["tmin"] - SURFACE_OFF))
-        tg_send(msg)
-    elif was_risk:
-        say("[TG][dry] был риск -> отправили бы итог")
+    # дедуп: строка за эту ночь уже в журнале?
+    dup = False
+    if os.path.exists(LOG_F):
+        try:
+            with open(LOG_F, encoding="utf-8") as f:
+                rows = [r for r in csv.reader(f) if r]
+            dup = len(rows) >= 2 and rows[-1][0] == start_date
+        except OSError:
+            pass
+    if dup:
+        say("[LOG] строка за %s уже в журнале — дубликат не пишу" % start_date)
+    else:
+        log_append({
+            "date": start_date, "label": label,
+            "pred_evening": st.get("pred_evening", "") if st else "",
+            "pred_midnight": st.get("pred_midnight", "") if st else "",
+            "pred_used": pred if pred is not None else "",
+            "risk": st.get("risk", "") if st else "",
+            "om_tmin": om_tmin if om_tmin is not None else "",
+            "fact_tmin": fact["tmin"], "fact_at": fact["tmin_at"],
+            "bias_fact_pred": round(fact["tmin"] - pred, 1) if pred is not None else "",
+            "bias_fact_om": round(fact["tmin"] - om_tmin, 1) if om_tmin is not None else "",
+            "wind_night": fact["wind_night"], "cloud_night": "", "note": note,
+        })
+        say("[LOG] строка добавлена в frost_log.csv (%s)" % note)
+    # сезонный контур: счётчики подряд + переходы (по факту ночи)
+    trans = season_update(st, fact["tmin"], start_date)
+    if trans == "winter":
+        msg = ("[DUTY] Перехожу в зимний режим дежурства: %d-я ночь подряд с "
+               "Tmin <= %+.0f° (последняя %+.1f° @ %s). Ночные сводки о заморозках "
+               "отключаю — дача в холодном останове. Остаюсь на посту: тихо коплю "
+               "статистику Tmin для калибровки, пишу только об аномалиях — мороз "
+               "<= %+.0f°, промах прогноза >= %+.0f°, молчание станции > %+.0f ч. "
+               "Весной (с апреля, %d тёплых ночей подряд) вернусь в садовый режим."
+               % (W_ENTER_N, W_ENTER_T, fact["tmin"], fact["tmin_at"],
+                  DEEP_COLD, MISS_ALERT, STALE_H, W_EXIT_N))
+        if dry:
+            say("[TG][dry] переход в зимний режим:\n%s" % msg)
+        else:
+            tg_send(msg)
+    elif trans == "garden":
+        msg = ("[DUTY] Садовый режим возвращён: %d ночей подряд Tmin >= %+.0f° "
+               "(последняя %+.1f° @ %s). Алерты заморозков снова активны."
+               % (W_EXIT_N, W_EXIT_T, fact["tmin"], fact["tmin_at"]))
+        if dry:
+            say("[TG][dry] переход в садовый режим:\n%s" % msg)
+        else:
+            tg_send(msg)
+    # промах прогноза (дрейф калибровки/сбой) — в любом сезоне
+    miss_txt = None
+    if pred is not None and abs(fact["tmin"] - pred) >= MISS_ALERT:
+        miss_txt = ("[DUTY] Промах прогноза: факт Tmin %+.1f° vs прогноз %+.1f° "
+                    "(ошибка %+.1f°, ночь %s). Порог %+.0f° — проверю станцию и "
+                    "калибровку на следующих проходах." % (
+                        fact["tmin"], pred, fact["tmin"] - pred, label, MISS_ALERT))
+    season_now = st["season"]
+    if season_now == "winter":
+        if miss_txt:
+            kuma_push("down", miss_txt.replace("[DUTY] ", ""), dry)
+            if dry:
+                say("[TG][dry] %s" % miss_txt)
+            else:
+                tg_send(miss_txt)
+        else:
+            kuma_push("up", "зима | ночь %s: факт Tmin %+.1f @%s (прогноз %s)" % (
+                label, fact["tmin"], fact["tmin_at"],
+                ("%+.1f" % pred) if pred is not None else "n/a"), dry)
+    else:  # garden
+        kuma_push("up", "ночь %s: факт Tmin %+.1f @%s (прогноз %s)" % (
+            label, fact["tmin"], fact["tmin_at"],
+            ("%+.1f" % pred) if pred is not None else "n/a"), dry)
+        if was_risk and not dry:
+            msg = ("[FROST] ночь %s: факт Tmin %+.1f° @ %s (прогноз %+.1f, ошибка "
+                   "%+.1f°). Поверхность держала ~%+.1f°." % (
+                       label, fact["tmin"], fact["tmin_at"], pred,
+                       fact["tmin"] - pred, fact["tmin"] - SURFACE_OFF))
+            tg_send(msg)
+        elif was_risk:
+            say("[TG][dry] был риск -> отправили бы итог")
+        if miss_txt:
+            if dry:
+                say("[TG][dry] %s" % miss_txt)
+            else:
+                tg_send(miss_txt)
+    if not dry:
+        save_state(st)
     con.close()
     return 0
 
 
 # ------------------------------------------------------------------- main ---
 
+def run_set(kv):
+    """Ручной оверрайд сезонного контура: --set K=V."""
+    key, _, val = kv.partition("=")
+    key = key.strip().lower()
+    val = val.strip().lower()
+    if not key:
+        say("[X] формат: --set K=V (season|digest|frost_streak|thaw_streak)")
+        return 1
+    st = state_defaults(load_state())
+    if key == "season":
+        if val not in ("garden", "winter"):
+            say("[X] season=garden|winter")
+            return 1
+        st["season"] = val
+        st["frost_streak"] = 0
+        st["thaw_streak"] = 0
+        say("[SET] season=%s, счётчики обнулены" % val)
+    elif key == "digest":
+        st["winter_digest"] = val in ("on", "1", "true", "yes")
+        say("[SET] winter_digest=%s" % st["winter_digest"])
+    elif key in ("frost_streak", "thaw_streak"):
+        try:
+            st[key] = int(val)
+        except ValueError:
+            say("[X] %s=<целое>" % key)
+            return 1
+        say("[SET] %s=%d" % (key, st[key]))
+    else:
+        say("[X] ключи: season | digest | frost_streak | thaw_streak")
+        return 1
+    save_state(st)
+    say("[STATE] season=%s frost_streak=%s thaw_streak=%s digest=%s" % (
+        st["season"], st["frost_streak"], st["thaw_streak"], st["winter_digest"]))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="ночной заморозочный дежурный")
-    g = ap.add_mutually_exclusive_group(required=True)
+    g = ap.add_mutually_exclusive_group()
     g.add_argument("--evening", action="store_true")
     g.add_argument("--midnight", action="store_true")
     g.add_argument("--verify", action="store_true")
+    ap.add_argument("--set", dest="set_kv", metavar="KEY=VAL",
+                    help="season=garden|winter | digest=on|off | "
+                         "frost_streak=N | thaw_streak=N")
     ap.add_argument("--dry-run", action="store_true",
                     help="без Kuma/Telegram (печать вердикта)")
     args = ap.parse_args()
+
+    if args.set_kv:
+        return run_set(args.set_kv)
+    if not (args.evening or args.midnight or args.verify):
+        ap.error("нужен один из --evening/--midnight/--verify (или --set K=V)")
 
     lock_path = os.path.join(BASE, ".frost.lock")
     try:
