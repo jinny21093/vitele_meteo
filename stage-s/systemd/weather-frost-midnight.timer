@@ -1,0 +1,14 @@
+# weather-frost-midnight.timer — контрольный проход 00:10 MSK
+# (правило сценария по расхождению факт-модель; всегда пушит Kuma —
+#  интервал монитора 10 ч рассчитан на связку 00:10 -> 09:30)
+
+[Unit]
+Description=Frost duty: midnight recheck at 00:10 MSK
+
+[Timer]
+OnCalendar=*-*-* 00:10:00 Europe/Moscow
+Persistent=true
+Unit=weather-frost@midnight.service
+
+[Install]
+WantedBy=timers.target

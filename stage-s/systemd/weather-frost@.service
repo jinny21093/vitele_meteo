@@ -1,0 +1,21 @@
+# weather-frost@.service — ночной заморозочный дежурный (шаблон).
+# Экземпляры: weather-frost@evening / @midnight / @verify (таймеры).
+# Ставится: cp в /etc/systemd/system/ && systemctl daemon-reload.
+# Секреты не в юните: Kuma — frost_push.conf, Telegram — report.env
+# (читаются самим frost_calc.py в runtime).
+
+[Unit]
+Description=Frost night duty (frost_calc.py --%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=auditbot
+WorkingDirectory=/home/auditbot/weather-dash
+Nice=15
+TimeoutStartSec=240
+ExecStart=/usr/bin/python3 /home/auditbot/weather-dash/frost_calc.py --%i
+
+[Install]
+WantedBy=multi-user.target

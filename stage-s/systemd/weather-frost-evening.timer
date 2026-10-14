@@ -1,0 +1,12 @@
+# weather-frost-evening.timer — первичная оценка ночи 21:30 MSK
+
+[Unit]
+Description=Frost duty: evening assessment at 21:30 MSK
+
+[Timer]
+OnCalendar=*-*-* 21:30:00 Europe/Moscow
+Persistent=true
+Unit=weather-frost@evening.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+# weather-frost-verify.timer — факт прошедшей ночи 09:30 MSK
+# (Tmin -> frost_log.csv, обучение калибровки; Kuma обратно в green)
+
+[Unit]
+Description=Frost duty: morning verify at 09:30 MSK
+
+[Timer]
+OnCalendar=*-*-* 09:30:00 Europe/Moscow
+Persistent=true
+Unit=weather-frost@verify.service
+
+[Install]
+WantedBy=timers.target
